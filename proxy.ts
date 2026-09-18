@@ -1,10 +1,12 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { isApiRequestOriginAllowed, shouldCheckApiRequestOrigin } from "@/lib/request-security";
+import { guardApiRequest } from "@/lib/api-request-guard";
 import { isValidWebSession, isWebPasswordEnabled, OMP_WEB_SESSION_COOKIE } from "@/lib/web-auth";
 
 export function proxy(request: NextRequest) {
-  if (request.nextUrl.pathname.startsWith("/api/") && shouldCheckApiRequestOrigin(request) && !isApiRequestOriginAllowed(request)) {
-    return NextResponse.json({ error: "Cross-origin API requests are not allowed" }, { status: 403 });
+  // Opaque wallpaper frames use a scoped capability, never the app's cookies.
+  if (/^\/api\/wallpapers\/[a-f0-9]{32}\/web-assets\/[a-f0-9]{64}\//.test(request.nextUrl.pathname)) return NextResponse.next();
+  if (request.nextUrl.pathname.startsWith("/api/")) {
+    return guardApiRequest(request) ?? NextResponse.next();
   }
   if (!isWebPasswordEnabled()) {
     return request.nextUrl.pathname === "/login"
@@ -29,4 +31,5 @@ export function proxy(request: NextRequest) {
 // session exists; these are public build assets, not workspace data. The
 // same goes for the web app manifest and its icons: browsers fetch them
 // without cookies, and a login redirect there breaks PWA installation.
-export const config = { matcher: "/((?!_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|icon\\.svg|icon\\.png|icon-192\\.png).*)" };
+// The upload route applies guardApiRequest itself and streams the body to disk.
+export const config = { matcher: "/((?!api/wallpapers/upload$|_next/static|_next/image|favicon\\.ico|manifest\\.webmanifest|icon\\.svg|icon\\.png|icon-192\\.png).*)" };

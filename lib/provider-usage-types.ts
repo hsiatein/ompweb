@@ -6,6 +6,13 @@ export interface ProviderUsageWindow {
   resetHours?: number;
 }
 
+export interface ProviderCreditBalance {
+  remaining: number;
+  limit: number;
+  limitSource: "reported" | "fallback";
+  percent: number;
+}
+
 export interface ProviderUsageReport {
   provider: string;
   accountLabel?: string;
@@ -14,6 +21,7 @@ export interface ProviderUsageReport {
   modelId?: string;
   tier?: string;
   noLimits?: boolean;
+  credits?: ProviderCreditBalance;
   fiveHour?: ProviderUsageWindow;
   sevenDay?: ProviderUsageWindow;
   monthly?: ProviderUsageWindow;

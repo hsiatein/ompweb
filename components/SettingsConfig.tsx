@@ -23,6 +23,8 @@ const PluginsConfig = dynamic(() => import("./PluginsConfig").then((module) => m
 const McpConfig = dynamic(() => import("./McpConfig").then((module) => module.McpConfig), { loading: SettingsTabLoading, ssr: false });
 const AgentsConfig = dynamic(() => import("./AgentsConfig").then((module) => module.AgentsConfig), { loading: SettingsTabLoading, ssr: false });
 const UsageConfig = dynamic(() => import("./UsageConfig").then((module) => module.UsageConfig), { loading: SettingsTabLoading, ssr: false });
+const PetsConfig = dynamic(() => import("./PetsConfig").then((module) => module.PetsConfig), { loading: SettingsTabLoading, ssr: false });
+const WallpapersConfig = dynamic(() => import("./WallpapersConfig").then((module) => module.WallpapersConfig), { loading: SettingsTabLoading, ssr: false });
 
 type UpdateState = AppUpdateInfo;
 type WindowsServiceStatus = {
@@ -753,6 +755,8 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
             )}
 
             {/* GENERAL & UI TAB */}
+            {currentTab === "pets" && <PetsConfig />}
+            {currentTab === "wallpapers" && <WallpapersConfig />}
             {currentTab === "general" && (
               <div role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general" className="settings-panel-inner" style={{ padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16 }}>
                 <div style={{ marginBottom: 4 }}>

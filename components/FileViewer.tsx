@@ -318,7 +318,7 @@ export function DiffView({ patch }: { patch: string }) {
 
   return (
     <div
-      className="file-diff-view"
+      className="file-diff-view wallpaper-surface"
       style={{
         width: "max-content",
         minWidth: "100%",
@@ -1049,7 +1049,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   return (
     <div className="file-viewer-shell" style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
       <div
-        className="file-viewer-toolbar"
+        className="file-viewer-toolbar wallpaper-surface"
         style={{
           display: "flex",
           alignItems: "center",
@@ -1172,7 +1172,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
           />
         ) : isMarkdown && displayMode === "preview" ? (
           <div
-            className="markdown-body markdown-file-preview"
+            className="markdown-body markdown-file-preview wallpaper-surface"
             style={{ padding: "24px 32px" }}
           >
             {frontmatter && <FrontmatterCard data={frontmatter} />}
@@ -1223,7 +1223,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
           </div>
         ) : highlightReady ? (
           <SyntaxHighlighter
-            className={wrapLines ? "file-source-view is-wrapped" : "file-source-view"}
+            className={wrapLines ? "file-source-view wallpaper-surface is-wrapped" : "file-source-view wallpaper-surface"}
             language={data.language === "text" ? "plaintext" : data.language}
             style={isDark ? vscDarkPlus : vs}
             showLineNumbers
@@ -1256,6 +1256,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
           </SyntaxHighlighter>
         ) : (
           <pre
+            className="file-source-view wallpaper-surface"
             style={{
               margin: 0,
               padding: "11px 13px",

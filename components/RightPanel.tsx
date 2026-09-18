@@ -162,7 +162,7 @@ export const RightPanel = memo(function RightPanel({
         }}
       >
         {/* Right panel toolbar: tabs + editor integrations (chat, path, explorer) */}
-        <div className="right-panel-toolbar" style={{ display: "flex", alignItems: "center", flexShrink: 0, background: "var(--bg-panel)", borderBottom: "1px solid var(--border)", minHeight: isMobile ? 44 : 36, paddingRight: isMobile ? 44 : 36, flexWrap: "wrap" }}>
+        <div className="right-panel-toolbar wallpaper-surface" style={{ display: "flex", alignItems: "center", flexShrink: 0, background: "var(--bg-panel)", borderBottom: "1px solid var(--border)", minHeight: isMobile ? 44 : 36, paddingRight: isMobile ? 44 : 36, flexWrap: "wrap" }}>
           <div style={{ flex: isMobile ? "1 0 100%" : "1 1 160px", overflow: "hidden", minWidth: 0 }}>
             <TabBar
               tabs={fileTabs}
@@ -313,6 +313,7 @@ export const RightPanel = memo(function RightPanel({
           {explorerCwd ? (
             <>
               <div
+                className="wallpaper-surface"
                 title={explorerCwd}
                 style={{
                   display: "flex",

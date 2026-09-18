@@ -21,7 +21,7 @@ const nextConfig = (phase: string): NextConfig => {
     // undici is loaded from a runtime dependency (lib/http-dispatcher.ts) to
     // honor HTTP(S)_PROXY for server-side fetch; keep it external so the
     // bundler does not inline a second copy next to the global dispatcher.
-    serverExternalPackages: ["undici"],
+    serverExternalPackages: ["undici", "dxt-js", "lz4js", "sharp"],
     webpack(config: Parameters<NonNullable<NextConfig["webpack"]>>[0]) {
       // Next's entrypoint tracer does not automatically reject dynamic paths
       // outside the project root. Add parent/profile patterns to its ignore list
@@ -74,9 +74,8 @@ const nextConfig = (phase: string): NextConfig => {
         { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
       ];
       const globalRule = {
-        // Everything except /api/files (negative lookahead, same pattern style
-        // as the proxy matcher).
-        source: "/((?!api/files/).*)",
+        // Files and sandboxed wallpaper documents supply their own policies.
+        source: "/((?!api/files/|api/wallpapers/[a-f0-9]+/web-assets/).*)",
         headers: securityHeaders,
       };
       const fileRule = {

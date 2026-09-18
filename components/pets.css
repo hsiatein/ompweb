@@ -1,0 +1,36 @@
+.pet-settings { padding: 24px; gap: 20px; color: var(--text); }
+.pet-settings-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+.pet-settings h2 { margin: 0; font-size: 22px; letter-spacing: 0; }
+.pet-settings-actions { display: flex; align-items: center; gap: 8px; }
+.pet-import-button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text); cursor: pointer; font-size: 13px; }
+.pet-settings button:disabled { opacity: .5; cursor: default; }
+.pet-error { color: var(--text); border-left: 3px solid var(--accent); padding-left: 12px; overflow-wrap: anywhere; }
+.pet-library { display: grid; grid-template-columns: repeat(auto-fill, minmax(128px, 1fr)); gap: 12px; }
+.pet-library-item { position: relative; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; background: var(--bg-panel); }
+.pet-library-item.selected { border-color: var(--accent); background: var(--bg-selected); }
+.pet-select { display: flex; flex-direction: column; align-items: center; gap: 6px; width: 100%; height: 158px; padding: 12px; border: 0; color: var(--text); background: transparent; cursor: pointer; }
+.pet-select:hover { background: var(--bg-hover); }
+.pet-name { width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; }
+.pet-source { color: var(--text-muted); font-size: 11px; }
+.pet-selected-check { position: absolute; top: 8px; left: 8px; color: var(--accent); }
+.pet-delete { position: absolute; top: 4px; right: 4px; }
+.pet-options { border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); padding: 8px 0; }
+.pet-options label, .pet-option-row { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; min-height: 46px; font-size: 13px; }
+.pet-options input[type="range"] { width: min(220px, 100%); accent-color: var(--accent); }
+.pet-options input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--accent); }
+.pet-options output { color: var(--text-muted); margin-left: 8px; }
+.pet-preview { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+.pet-preview label { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.pet-preview select { max-width: 170px; min-height: 34px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-panel); color: var(--text); }
+.pet-companion { position: fixed; z-index: 350; user-select: none; }
+.pet-body { display: block; border: 0; padding: 0; background: transparent; cursor: grab; touch-action: none; color: var(--text); }
+.pet-body:active { cursor: grabbing; }
+.pet-controls { display: flex; align-items: center; justify-content: center; height: 30px; gap: 2px; opacity: 0; transition: opacity 150ms; }
+.pet-companion:hover .pet-controls, .pet-companion:focus-within .pet-controls { opacity: 1; }
+.pet-controls button { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; padding: 0; color: var(--text-muted); background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; cursor: pointer; }
+.pet-controls button:hover { background: var(--bg-hover); color: var(--text); }
+.pet-unavailable { position: fixed; right: 12px; bottom: 160px; z-index: 350; display: flex; align-items: center; background: var(--bg-panel); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+.pet-unavailable button { background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 4px; }
+@media (hover: none) { .pet-controls { opacity: 1; } }
+@media (max-width: 600px) { .pet-settings { padding: 16px 14px 32px; } }
+@media (prefers-reduced-motion: reduce) { .pet-controls { transition: none; } }

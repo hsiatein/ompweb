@@ -92,3 +92,21 @@ bin/tray-publish/
 
 # npm packaging archives
 *.tgz
+
+# Private workstation state and local-only publication notes
+/story/
+/.omp/
+/.codex/
+/scripts/wireguard/
+/docs/LOCAL-CUSTOMIZATIONS.md
+/docs/scene-*-20??-??-??.md
+/docs/gpu-video-diagnostic-*.md
+/native/wallpaper-scene/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite3
+*.key
+*.p12
+*.pfx

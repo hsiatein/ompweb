@@ -3,6 +3,7 @@ import { promisify } from "util";
 import { resolveOmpBin } from "./omp/omp-cli";
 import { asNumber, isRecord } from "./type-guards";
 import type {
+  ProviderCreditBalance,
   ProviderUsageReport,
   ProviderUsageSnapshot,
   ProviderUsageWindowId,
@@ -12,6 +13,7 @@ const execFileAsync = promisify(execFile);
 const USAGE_TIMEOUT_MS = 30_000;
 const USAGE_MAX_BUFFER = 4 * 1024 * 1024;
 const USAGE_CACHE_TTL_MS = 5 * 60_000;
+const HYPER_FALLBACK_CREDIT_LIMIT = 250;
 
 type UsageQuery = { provider?: string; modelId?: string };
 
@@ -60,6 +62,28 @@ function usageWindow(
 
 function accountLabel(metadata: Record<string, unknown> | undefined): string | undefined {
   return nonEmptyString(metadata?.email) ?? nonEmptyString(metadata?.accountId);
+}
+
+function hyperCreditBalance(provider: string, limits: unknown[]): ProviderCreditBalance | undefined {
+  if (provider !== "charm-hyper") return undefined;
+  for (const limit of limits) {
+    if (!isRecord(limit) || !isRecord(limit.scope) || !isRecord(limit.amount)) continue;
+    if (limit.scope.windowId !== "balance" || limit.amount.unit !== "credits") continue;
+    const remaining = asNumber(limit.amount.remaining);
+    if (remaining === undefined) continue;
+    const reportedLimit = asNumber(limit.amount.limit);
+    const hasLimit = reportedLimit !== undefined && reportedLimit > 0;
+    const total = hasLimit ? reportedLimit : HYPER_FALLBACK_CREDIT_LIMIT;
+    // Hyper currently exposes balance only, not a plan or reset window. The
+    // fallback is a display reference, not evidence of subscription or spend.
+    return {
+      remaining,
+      limit: total,
+      limitSource: hasLimit ? "reported" : "fallback",
+      percent: Math.max(0, Math.min(100, (1 - remaining / total) * 100)),
+    };
+  }
+  return undefined;
 }
 
 type UsageLimit = { id: ProviderUsageWindowId; fraction: number; window: Record<string, unknown> };
@@ -117,13 +141,14 @@ function normalizeReport(
   const metadata = isRecord(rawReport.metadata) ? rawReport.metadata : undefined;
   const label = accountLabel(metadata);
   const plan = nonEmptyString(metadata?.planType);
+  const credits = hyperCreditBalance(provider, limits);
   if (selectedGroups.length === 0) {
     return [{
       provider,
       ...(label ? { accountLabel: label } : {}),
       ...(!label ? { accountIndex: reportIndex + 1 } : {}),
       ...(plan ? { plan } : {}),
-      noLimits: true,
+      ...(credits ? { credits } : { noLimits: true }),
     }];
   }
   return selectedGroups.flatMap((group) => {
@@ -134,6 +159,7 @@ function normalizeReport(
       ...(plan ? { plan } : {}),
       ...(group.modelId ? { modelId: group.modelId } : {}),
       ...(group.tier ? { tier: group.tier } : {}),
+      ...(credits ? { credits } : {}),
     };
     for (const candidate of group.limits.values()) {
       const normalized = usageWindow(candidate.id, candidate.fraction, candidate.window, now);

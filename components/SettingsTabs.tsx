@@ -1,11 +1,13 @@
 "use client";
 
 import { useI18n } from "@/lib/i18n";
-import { BarChart3, Bot, Cable, Cpu, KeyRound, RefreshCw, Settings2, ShieldCheck, Sparkles } from "lucide-react";
+import { BarChart3, Bot, Cable, Cpu, KeyRound, RefreshCw, Settings2, ShieldCheck, Sparkles, PawPrint, Image } from "lucide-react";
 import type { ComponentType, CSSProperties } from "react";
 
 export type SettingsTab =
   | "general"
+  | "pets"
+  | "wallpapers"
   | "safety"
   | "models"
   | "providers"
@@ -28,6 +30,8 @@ export interface TabItem {
 
 export const SETTINGS_CATEGORIES: TabItem[] = [
   { id: "general", label: "Interface & Behavior", description: "UI preferences, completion sound, submission mode", Icon: Settings2 },
+  { id: "pets", label: "Pets", description: "Codex pet library and animation", Icon: PawPrint },
+  { id: "wallpapers", label: "Wallpapers", description: "Images, videos and glass", Icon: Image },
   { id: "safety", label: "Safety & Approvals", description: "Tool safety rules, YOLO mode, terminal permissions", Icon: ShieldCheck },
   { id: "models", label: "AI Model Defaults", description: "Reasoning budget, verbosity, personality, scratchpad", Icon: Cpu },
   { id: "providers", label: "API Keys & Providers", description: "Connected OAuth accounts, API keys, and model registry", Icon: KeyRound },

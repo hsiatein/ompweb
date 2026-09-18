@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import { ChevronRight, Gauge } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { formatUsageReset, usageTone, useProviderUsage } from "./AppShell-provider-usage";
-import type { ProviderUsageReport, ProviderUsageWindow } from "@/lib/provider-usage-types";
+import type { ProviderCreditBalance, ProviderUsageReport, ProviderUsageWindow } from "@/lib/provider-usage-types";
 
 interface WindowDef {
   short: string;
@@ -27,7 +27,24 @@ function worstWindow(report: ProviderUsageReport): { short: string; window: Prov
       best = { short: def.short, window };
     }
   }
+  if (report.credits && (!best || report.credits.percent > best.window.percent)) {
+    best = { short: report.credits.limitSource === "fallback" ? "HC*" : "HC", window: report.credits };
+  }
   return best;
+}
+
+export function CreditBalanceDetails({ credits, t }: {
+  credits: ProviderCreditBalance;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 10, color: "var(--text-muted)", overflowWrap: "anywhere" }}>
+      <span>{t("providerUsage.creditBalance", { value: credits.remaining })}</span>
+      <span>{t(credits.limitSource === "fallback" ? "providerUsage.creditLimitFallback" : "providerUsage.creditLimit", { value: credits.limit })}</span>
+      <span>{t(credits.limitSource === "fallback" ? "providerUsage.creditReferenceUsed" : "providerUsage.creditUsed", { percent: Number(credits.percent.toFixed(1)) })}</span>
+      {credits.limitSource === "fallback" && <span style={{ color: "var(--text-dim)" }}>{t("providerUsage.creditCaveat")}</span>}
+    </div>
+  );
 }
 
 function DetailMeter({ short, window, t }: {
@@ -88,6 +105,7 @@ export function ProviderUsageBar() {
 
   return (
     <section
+      className="provider-usage-panel wallpaper-surface"
       aria-label={t("appShell.sectionProviderUsage")}
       style={{
         display: "flex",
@@ -164,7 +182,7 @@ export function ProviderUsageBar() {
         const pct = best ? Math.round(best.window.percent) : 0;
         const tone = usageTone(pct);
         return (
-          <div key={key} style={{ borderRadius: "var(--radius-control)", background: expanded ? "var(--bg-subtle)" : "transparent" }}>
+          <div key={key} className="provider-usage-account" style={{ borderRadius: "var(--radius-control)", background: expanded ? "var(--bg-subtle)" : "transparent" }}>
             <button
               type="button"
               onClick={() => setExpandedKey((prev) => (prev === key ? null : key))}
@@ -205,6 +223,11 @@ export function ProviderUsageBar() {
               </span>
               {report.noLimits ? (
                 <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>∞</span>
+              ) : report.credits ? (
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: tone, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}
+                  title={t("providerUsage.creditBalance", { value: report.credits.remaining })}>
+                  {report.credits.remaining}/{report.credits.limit}{report.credits.limitSource === "fallback" ? "*" : ""}
+                </span>
               ) : (
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: tone, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
                   {pct}%
@@ -218,6 +241,7 @@ export function ProviderUsageBar() {
             )}
             {expanded && !report.noLimits && (
               <div style={{ display: "flex", flexDirection: "column", gap: 4, padding: "6px 8px 7px 23px", fontFamily: "var(--font-mono)" }}>
+                {report.credits && <CreditBalanceDetails credits={report.credits} t={t} />}
                 {WINDOWS.map((def) => {
                   const window = def.pick(report);
                   return window ? <DetailMeter key={def.short} short={def.short} window={window} t={t} /> : null;

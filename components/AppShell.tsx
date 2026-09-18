@@ -10,12 +10,18 @@ import { ToastProvider } from "./ui/toast";
 import { toast } from "./ui/toast";
 import { ConfirmDialog } from "./ui/field";
 import { ChatWindow } from "./ChatWindow";
+import { PetCompanion } from "./PetCompanion";
+import { WallpaperBackground } from "./WallpaperBackground";
+import { WallpaperControls } from "./WallpaperControls";
+import "./wallpapers.css";
+import "./pets.css";
+import type { PetActivity } from "@/lib/pets";
 import { type Tab } from "./TabBar";
 import { type FileExplorerHandle } from "./FileExplorer";
 import type { RightPanelView } from "./RightPanel";
 import { BranchNavigator } from "./BranchNavigator";
 import { LanguageSwitcher } from "./LanguageSwitcher";
-import { Check, Ellipsis, Folder, History, Menu, PanelLeft, Terminal, Wand2, Zap } from "lucide-react";
+import { Check, ChevronDown, Ellipsis, Folder, History, Menu, PanelLeft, Terminal, Wand2, Zap } from "lucide-react";
 import { ThemeSwitcher } from "./ThemeSwitcher";
 import { translate, useI18n } from "@/lib/i18n";
 import { formatApiError } from "@/lib/i18n/api-error";
@@ -118,6 +124,7 @@ export function AppShell() {
   const [explorerRefreshKey, setExplorerRefreshKey] = useState(0);
   const [explorerRefreshing, setExplorerRefreshing] = useState(false);
   const [settingsTab, setSettingsTab] = useState<SettingsTab | null>(null);
+  const [petActivity, setPetActivity] = useState<PetActivity>({ sessionKey: "", state: "idle" });
   const [archiveBrowserOpen, setArchiveBrowserOpen] = useState(false);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -1604,7 +1611,8 @@ export function AppShell() {
         }
       }
     `}</style>
-    <div style={{ display: "flex", height: "100%", flex: 1, overflow: "hidden", background: "var(--bg)" }}>
+    <WallpaperBackground />
+    <div className="wallpaper-shell" style={{ display: "flex", height: "100%", flex: 1, overflow: "hidden", background: "var(--bg)" }}>
       {/* Left sidebar: hidden on full-page Settings */}
       {!settingsTab && (
         <>
@@ -1737,6 +1745,7 @@ export function AppShell() {
               </summary>
               <div ref={mobileToolsContentRef} className="shell-topbar-overflow-content">
             <ThemeSwitcher />
+            <WallpaperControls onOpen={() => setSettingsTab("wallpapers")} />
             <LanguageSwitcher />
             {showChat && (
               <>
@@ -2026,17 +2035,18 @@ export function AppShell() {
         </div>
 
         {/* Chat content */}
-        <div style={{ flex: 1, overflow: "hidden", position: "relative" }}>
+        <div className="wallpaper-chat-pane" style={{ flex: 1, overflow: "hidden", position: "relative" }}>
           {showChat ? (
             <ChatWindow
               key={sessionKey}
               session={selectedSession}
               newSessionCwd={effectiveNewSessionCwd}
               newSessionWorkspace={effectiveNewSessionCwd && (
-                <div className="mb-4 flex min-w-0 flex-col gap-2">
-                  <label htmlFor="new-session-workspace" style={{ fontSize: 13, fontWeight: 500, color: "var(--text-muted)" }}>
+                <div className="wallpaper-workspace mb-4 flex min-w-0 flex-col gap-2">
+                  <label className="wallpaper-surface" htmlFor="new-session-workspace" style={{ fontSize: 13, fontWeight: 500, color: "var(--text-muted)" }}>
                     {t("settingsConfig.chipWorkspace")}
                   </label>
+                  <div className="wallpaper-workspace-select wallpaper-surface">
                   <select
                     id="new-session-workspace"
                     aria-describedby="new-session-workspace-path"
@@ -2069,12 +2079,15 @@ export function AppShell() {
                     })}
                     <option value="">+ {t("projects.add")}</option>
                   </select>
-                  <div id="new-session-workspace-path" style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
+                  <span className="wallpaper-select-chevron" data-wallpaper-contrast-icon aria-hidden="true"><ChevronDown size={16} /></span>
+                  </div>
+                  <div id="new-session-workspace-path" className="wallpaper-surface" style={{ fontSize: 12, color: "var(--text-muted)", fontFamily: "var(--font-mono)", overflowWrap: "anywhere" }}>
                     {effectiveNewSessionCwd}
                   </div>
                 </div>
               )}
               onAgentEnd={handleAgentEnd}
+              onPetActivityChange={setPetActivity}
               onSessionCreated={handleSessionCreated}
               onSessionForked={handleSessionForked}
               modelsRefreshKey={modelsRefreshKey}
@@ -2198,6 +2211,7 @@ export function AppShell() {
     {!settingsTab && (
       <button
       onClick={() => setRightPanelOpen((v) => !v)}
+      className="wallpaper-panel-toggle"
       title={rightPanelOpen ? t("appShell.hideFilePanel") : t("appShell.showFilePanel")}
       aria-label={rightPanelOpen ? t("appShell.hideFilePanel") : t("appShell.showFilePanel")}
       style={{
@@ -2216,6 +2230,10 @@ export function AppShell() {
       </svg>
     </button>
     )}
+    {!settingsTab && <PetCompanion
+      activity={!settingsTab && petActivity.sessionKey === (selectedSession?.id ?? effectiveNewSessionCwd ?? "") ? petActivity : { sessionKey: "", state: "idle" }}
+      onSettings={() => setSettingsTab("pets")}
+    />}
     <AppUpdateDialog open={appUpdateDialogOpen} update={appUpdate} phase={appUpdatePhase} visibleStage={appUpdateVisibleStage} error={appUpdateError} onProceed={() => void proceedWithAppUpdate()} onNotNow={dismissAppUpdate} />
     {archiveBrowserOpen && (
       <ArchiveBrowser

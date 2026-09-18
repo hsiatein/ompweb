@@ -370,7 +370,7 @@ function UserMessageView({ message, cwd, onOpenFile, entryId, onFork, forking, o
     <div
       style={{ marginBottom: 18, display: "flex", flexDirection: "column", alignItems: "flex-end", paddingRight: 6 }}
     >
-      <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", maxWidth: "85%", minWidth: 0 }}>
+      <div className="wallpaper-user" style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", maxWidth: "85%", minWidth: 0 }}>
         <div
           className="chat-message-card"
           ref={bodyRef}
@@ -603,7 +603,7 @@ function AssistantMessageView({
 
   return (
     <div
-      className="chat-message"
+      className="chat-message wallpaper-assistant"
       style={{ marginBottom: 6 }}
     >
       {/* Model label */}

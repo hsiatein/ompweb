@@ -1167,6 +1167,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
       )}
       {/* Header: branding + quiet utilities + New Session */}
       <div
+        className="wallpaper-surface"
         style={{
           padding: "10px 10px 8px",
           borderBottom: "1px solid var(--border)",
@@ -1267,7 +1268,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
       </div>
 
       {/* Workspaces section header: label + search / filter / add */}
-      <div style={{ flexShrink: 0, padding: "4px 10px 2px", display: "flex", alignItems: "center", gap: 2 }}>
+      <div className="wallpaper-surface" style={{ flexShrink: 0, padding: "4px 10px 2px", display: "flex", alignItems: "center", gap: 2 }}>
         <span
           style={{
             flex: 1,
@@ -1473,9 +1474,6 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
     </div>
   );
 });
-
-
-
 
 
 

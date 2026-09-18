@@ -144,6 +144,7 @@ export function GitChangesPanel({ cwd, refreshKey, onOpenFile, onAtMention, onRe
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", minHeight: 0 }}>
       <div
+        className="wallpaper-surface"
         style={{
           display: "flex",
           alignItems: "center",
@@ -238,7 +239,7 @@ export function GitChangesPanel({ cwd, refreshKey, onOpenFile, onAtMention, onRe
         </div>
       ) : (
         <>
-          <div style={{ padding: "0 12px 4px", fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>
+          <div className="wallpaper-surface" style={{ padding: "0 12px 4px", fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>
             {tn("gitChanges.filesChanged", files.length)}
           </div>
           <div role="listbox" aria-label={t("tabBar.git")} style={{ flex: "0 1 auto", maxHeight: "38%", minHeight: 60, overflowY: "auto", overflowX: "hidden", padding: "0 4px", flexShrink: 1, borderBottom: "1px solid var(--border)" }}>
@@ -253,6 +254,7 @@ export function GitChangesPanel({ cwd, refreshKey, onOpenFile, onAtMention, onRe
               return (
                 <div
                   key={file.filePath}
+                  className="wallpaper-surface"
                   role="option"
                   tabIndex={0}
                   aria-selected={isSelected}
@@ -364,6 +366,7 @@ export function GitChangesPanel({ cwd, refreshKey, onOpenFile, onAtMention, onRe
             })}
           </div>
           <div
+            className="wallpaper-surface"
             style={{
               display: "flex",
               alignItems: "center",

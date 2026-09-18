@@ -303,6 +303,7 @@ const ExplorerRow = memo(function ExplorerRow({
 
   return (
     <div
+      className="wallpaper-surface"
       onClick={() => onActivate(node, index)}
       onKeyDown={(e) => onKeyDown(e, node, index)}
       onMouseEnter={() => setHovered(true)}
@@ -1160,7 +1161,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
       {/* Pinned: the result list scrolls, so an un-sticky box leaves you
           unable to edit the query that produced it. */}
       {fileSearchOpen && (
-        <div style={{
+        <div className="wallpaper-surface" style={{
           position: "sticky",
           top: 0,
           zIndex: 1,
@@ -1236,7 +1237,7 @@ export const FileExplorer = forwardRef<FileExplorerHandle, Props>(function FileE
         </div>
       )}
       {showUploadFeedback && (
-        <div style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
+        <div className="wallpaper-surface" style={{ padding: "6px 8px", borderBottom: "1px solid var(--border)" }}>
         {uploadBusy && (
           <div role="status" aria-live="polite" aria-label={uploadPhase === "checking" ? t("fileExplorer.checkingFiles") : t("fileExplorer.uploadingPercent", { percent: uploadProgress })}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, minHeight: 14, color: "var(--text-muted)" }}>

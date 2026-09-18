@@ -1513,6 +1513,9 @@ pre, code {
 }
 
 /* Sidebar session rows: keyboard access */
+.session-item-row {
+  border-radius: 8px;
+}
 .session-item-button {
   font: inherit;
   color: inherit;

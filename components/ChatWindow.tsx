@@ -31,6 +31,7 @@ import {
   VISIBLE_PAGE_SIZE,
 } from "@/lib/chat-lazy-load";
 import { getDraftSummary } from "@/lib/draft-store";
+import { resolvePetState, type PetActivity } from "@/lib/pets";
 
 interface Props {
   session: SessionInfo | null;
@@ -38,6 +39,7 @@ interface Props {
   newSessionWorkspace?: ReactNode;
   toolCallsDefaultCollapsed?: boolean;
   onAgentEnd?: () => void;
+  onPetActivityChange?: (activity: PetActivity) => void;
   onSessionCreated?: (session: SessionInfo) => void;
   onSessionForked?: (newSessionId: string) => void;
   modelsRefreshKey?: number;
@@ -518,7 +520,7 @@ const CommittedTranscript = memo(function CommittedTranscript({
   );
 });
 
-export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCallsDefaultCollapsed = true, onAgentEnd, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onProviderUsageContextChange, onGenerationSpeedChange, onOpenFile, onOpenProviders }: Props) {
+export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCallsDefaultCollapsed = true, onAgentEnd, onPetActivityChange, onSessionCreated, onSessionForked, modelsRefreshKey, chatInputRef, onBranchDataChange, onSystemPromptChange, onSystemPromptLoaderChange, onSessionStatsChange, onSessionStatsPanelOpen, onProviderUsageContextChange, onGenerationSpeedChange, onOpenFile, onOpenProviders }: Props) {
   const { t, tn } = useI18n();
   const { playDoneSound, unlockAudio } = useAudio();
   const isMobile = useIsMobile();
@@ -567,6 +569,17 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     onOpenFile,
   });
   const sessionBusy = agentRunning || bashRunning;
+  const petSessionKey = session?.id ?? newSessionCwd ?? "";
+  const lastAssistant = useMemo(() => messages.findLast((message) => message.role === "assistant") as AssistantMessage | undefined, [messages]);
+  const petState = resolvePetState({
+    waiting: Boolean(extensionDialog || extensionCustomUi),
+    running: sessionBusy || isCompacting,
+    failed: Boolean(error || notices.some((notice) => notice.type === "error") || lastAssistant?.stopReason === "error"),
+    completed: Boolean(lastAssistant && lastAssistant.stopReason !== "aborted"),
+  });
+  useEffect(() => {
+    onPetActivityChange?.({ sessionKey: petSessionKey, state: petState });
+  }, [onPetActivityChange, petSessionKey, petState]);
   const modelCapacity = useMemo(() => {
     if (!displayModelValue) return null;
     const model = modelList.find((entry) => entry.provider === displayModelValue.provider && entry.id === displayModelValue.modelId);

@@ -24,6 +24,10 @@ export function formatProviderUsageReport(report: ProviderUsageReport, noLimitsL
   if (report.noLimits) return noLimitsLabel;
   const parts: string[] = [];
   if (report.tier) parts.push(report.tier);
+  if (report.credits) {
+    const { remaining, limit, limitSource } = report.credits;
+    parts.push(`${remaining}/${limit} credits remaining${limitSource === "fallback" ? " (estimated limit)" : ""}`);
+  }
   if (report.fiveHour) {
     const reset = report.fiveHour.resetMinutes === undefined
       ? ""
