@@ -14,6 +14,34 @@ const { MessageView, SafeMarkdownBody, TaskResultPanel, isInterruptedMessage } =
 const { CodeBlock } = await jiti.import("./MermaidBlock.tsx");
 afterEach(cleanup);
 
+test("expanded thinking uses an inset surface and retains whitespace and streaming updates", () => {
+  const props = thinking => ({
+    message: { role: "assistant", content: [{ type: "thinking", thinking }] },
+    isStreaming: true,
+  });
+  const first = "Preview text\n    indented line";
+  const view = render(React.createElement(MessageView, props(first)));
+  fireEvent.click(view.container.querySelector(".activity-row-trigger"));
+  const output = () => view.container.querySelector(".thinking-output");
+  assert.ok(output().classList.contains("wallpaper-inset"));
+  assert.equal(output().textContent, first);
+  assert.equal(output().getAttribute("data-wallpaper-contrast"), null);
+  view.rerender(React.createElement(MessageView, props(first + "\nNew output")));
+  assert.equal(output().textContent, first + "\nNew output");
+  fireEvent.click(view.container.querySelector(".activity-row-trigger"));
+  assert.equal(output(), null);
+});
+
+test("deferred thinking errors preserve semantic ink on the glass inset", () => {
+  const view = render(React.createElement(MessageView, {
+    message: { role: "assistant", content: [{ type: "thinking", thinking: "", deferred: true }] },
+  }));
+  fireEvent.click(view.container.querySelector(".activity-row-trigger"));
+  const output = view.container.querySelector(".thinking-output-error");
+  assert.ok(output.classList.contains("wallpaper-inset"));
+  assert.equal(output.getAttribute("data-wallpaper-contrast"), "off");
+});
+
 test("sent messages without timestamps or branch metadata still offer copy", () => {
   const html = renderToStaticMarkup(React.createElement(MessageView, {
     message: { role: "user", content: "Keep this message copyable." },
@@ -557,7 +585,7 @@ test("interrupted assistant message renders user-friendly status badge without r
     },
   }));
 
-  assert.match(html, /role="status"/);
+  assert.match(html, /class="wallpaper-inset" role="status"/);
   assert.match(html, /Generation stopped by user/);
   assert.doesNotMatch(html, /messageView\.responseError/);
   assert.doesNotMatch(html, /Response error/);
@@ -574,7 +602,7 @@ test("actual error assistant message renders alert badge without responseError p
     },
   }));
 
-  assert.match(html, /role="alert"/);
+  assert.match(html, /class="wallpaper-inset" role="alert"/);
   assert.match(html, /429 Too Many Requests: Rate limit exceeded/);
   assert.doesNotMatch(html, /messageView\.responseError/);
   assert.doesNotMatch(html, /Response error:/);

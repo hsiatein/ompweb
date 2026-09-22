@@ -32,6 +32,14 @@ async function readJson(file: string) {
   if (!stat.isFile() || stat.size > 256 * 1024) throw new Error("Invalid metadata");
   return JSON.parse(await fs.readFile(file, "utf8"));
 }
+export async function readScenePropertyOverrides(id: string): Promise<Record<string, string | number | boolean>> {
+  if (!/^[a-f0-9]{32}$/.test(id)) throw new Error("Invalid scene identifier");
+  try {
+    const value = await readJson(path.join(storeDir(), "scene-properties", `${id}.json`));
+    if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length > 256) throw new Error("Invalid scene property overrides");
+    return Object.fromEntries(Object.entries(value).filter(([, v]) => typeof v === "boolean" || typeof v === "number" && Number.isFinite(v) || typeof v === "string" && v.length <= 8192)) as Record<string, string | number | boolean>;
+  } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return {}; throw error; }
+}
 async function configuredRoots(): Promise<string[]> {
   try {
     const value = await readJson(path.join(storeDir(), "folders.json"));

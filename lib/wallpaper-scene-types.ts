@@ -57,6 +57,8 @@ export interface SceneLayer {
   disablePropagation?: boolean;
   timelines?: SceneTimeline[];
   group?: boolean;
+  camera?: { zoom: number };
+  composition?: boolean;
   alignment?: string;
   parent?: number;
   attachment?: string;
@@ -76,6 +78,7 @@ export interface BrowserScene {
   fonts?: SceneFont[];
   sounds?: SceneSound[];
   scriptTemplates?: Record<string, SceneLayer>;
+  userProperties?: Record<string, string | number | boolean>;
   warnings?: string[];
   cameraEffects: { parallax: boolean; amount: number; delay: number; mouse: number; shake: boolean; amplitude: number; speed: number; roughness: number };
   bloom?: { strength: number; threshold: number };

@@ -2206,6 +2206,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         {/* Live agent status bar — attached to composer's top edge */}
         {statusText && (
           <div
+            className="composer-status-bar wallpaper-surface"
             role="status"
             aria-live="polite"
             style={{
@@ -2296,6 +2297,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {/* Plus menu — attachment · tools submenu · advisor submenu */}
             <div ref={plusMenuRef} style={{ position: "relative", flexShrink: 0 }}>
               <button
+                className="wallpaper-inset"
                 onClick={() => setPlusMenuOpen((v) => !v)}
                 title={t("chatInput.plusMenu")}
                 aria-label={t("chatInput.plusMenu")}
@@ -2431,6 +2433,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {(modelOptions.length > 0 || currentName || modelError || showModelsLoading) && onModelChange && (
               <div ref={dropdownRef} className="composer-model-control" style={{ position: "relative", minWidth: 0 }}>
                 <button
+                  className="wallpaper-inset"
                   onClick={() => setModelDropdownOpen((v) => !v)}
                   disabled={modelSelectorDisabled}
                   aria-label={`${t("chatInput.changeModel")}: ${currentName ?? (modelOptions.length > 0
@@ -2537,6 +2540,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {onThinkingLevelChange && (
               <div ref={thinkingDropdownRef} className="composer-thinking-control" style={{ position: "relative", minWidth: 0 }}>
                 <button
+                  className="wallpaper-inset"
                   onClick={() => setThinkingDropdownOpen((v) => !v)}
                   disabled={isStreaming}
                   title={t("chatInput.changeReasoningTitle", { level: thinkingDisplayLabel })}
@@ -2666,6 +2670,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {onCompact && (
               <div ref={contextWrapRef} style={{ position: "relative", flexShrink: 0 }}>
                 <button
+                  className="wallpaper-inset"
                   type="button"
                   onClick={() => setContextOpen((open) => !open)}
                   title={ringTitle}
@@ -2751,6 +2756,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                     />
                     <button
                       type="button"
+                      className="wallpaper-inset"
                       onClick={() => {
                         if (isCompacting) onAbortCompaction?.();
                         else onCompact?.();
@@ -2813,7 +2819,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {primaryActionQueuesMessage ? (
               <button
                 type="button"
-                className="composer-primary-action"
+                className="composer-primary-action wallpaper-inset"
                 onClick={() => sendQueued("followup")}
                 title={t("chatInput.queueMessage")}
                 style={{
@@ -2834,7 +2840,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             ) : isStreaming ? (
               <button
                 type="button"
-                className="composer-primary-action"
+                className="composer-primary-action wallpaper-inset"
                 onClick={isCompacting ? onAbortCompaction : onAbort}
                 title={t("chatInput.stopAgent")}
                 style={{
@@ -2857,7 +2863,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             ) : (
               <button
                 type="button"
-                className="composer-primary-action"
+                className="composer-primary-action wallpaper-inset"
                 onClick={handleSend}
                 disabled={!value.trim() && !attachedImages.length && !attachedTextFiles.length}
                 style={{

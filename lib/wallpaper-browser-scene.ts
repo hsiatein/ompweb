@@ -3,12 +3,12 @@ import * as path from "node:path";
 import { createHash } from "node:crypto";
 import { readWallpaperPackage, resourceName } from "./wallpaper-binary";
 import { decodeWallpaperTexture } from "./wallpaper-texture";
-import { browserEffectGlsl, sceneAudioUniforms } from "./wallpaper-glsl";
+import { browserEffectGlsl, browserFragmentGlsl, sceneAudioUniforms } from "./wallpaper-glsl";
 import { sceneTargetPlan } from "./wallpaper-scene-targets";
 import { decodeSceneMesh } from "./wallpaper-mesh";
 import { sceneWorldTransforms } from "./wallpaper-scene-parent";
 import { parseSceneTimeline } from "./wallpaper-timeline";
-import { resolveSceneProject, safeWallpaperFile } from "./wallpaper-store";
+import { readScenePropertyOverrides, resolveSceneProject, safeWallpaperFile } from "./wallpaper-store";
 import type { BrowserScene, SceneLayer, ScenePass, SceneParticles, ScenePropertyScript, SceneValues } from "./wallpaper-scene-types";
 
 type Compiled = { manifest: BrowserScene; assets: Map<string, Buffer> };
@@ -37,7 +37,10 @@ function builtinRoots(project: string) {
   return [...new Set(roots)];
 }
 export async function compileBrowserScene(id: string): Promise<Compiled> {
-  const { project, file, entryFile } = await resolveSceneProject(id);
+  const { project, file, entryFile, metadata } = await resolveSceneProject(id);
+  const propertyDefinitions = obj(obj(metadata.general).properties);
+  const overrides = Object.fromEntries(Object.entries(await readScenePropertyOverrides(id)).filter(([key, value]) =>
+    Object.hasOwn(propertyDefinitions, key) && typeof value === typeof obj(propertyDefinitions[key]).value));
   const bytes = await boundedRead(file, 512 * 1024 * 1024);
   const resources = file.endsWith(".pkg") ? readWallpaperPackage(bytes) : new Map<string, Buffer>([[entryFile, bytes]]);
   const roots = [path.dirname(project), ...builtinRoots(project)];
@@ -57,6 +60,9 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
       // Exported user controls wrap their authored value; scripts/animations
       // must retain their wrappers so they cannot silently become static.
       const property = obj(value);
+      if (typeof property.user === "string" && Object.hasOwn(property, "value") && Object.hasOwn(overrides, property.user) && typeof overrides[property.user] === typeof property.value) {
+        property.value = overrides[property.user];
+      }
       return Object.hasOwn(property, "value") && Object.hasOwn(property, "user") && Object.keys(property).every(k => k === "user" || k === "value") ? property.value : value;
     }));
   }
@@ -65,6 +71,11 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
   if (width <= 0 || height <= 0 || width > 16384 || height > 16384) throw new Error("Only orthographic 2D scenes are supported by the browser renderer");
   const manifest: BrowserScene = { version: 1, width, height, clearColor: sceneVector(general.clearcolor, [0, 0, 0]), layers: [], particles: [], textures: [], cameraEffects: { parallax: general.cameraparallax === true, amount: num(general.cameraparallaxamount, 1), delay: num(general.cameraparallaxdelay, .5), mouse: num(general.cameraparallaxmouseinfluence, 1), shake: general.camerashake === true, amplitude: num(general.camerashakeamplitude, .5), speed: num(general.camerashakespeed, 3), roughness: num(general.camerashakeroughness, 1) }, bloom: general.bloom ? { strength: Math.max(0, Math.min(5, num(general.bloomstrength, .2))), threshold: Math.max(0, Math.min(1, num(general.bloomthreshold, .8))) } : undefined };
   const assets = new Map<string, Buffer>(), textures = new Map<string, string>();
+  manifest.userProperties = Object.fromEntries(Object.entries(obj(obj(metadata.general).properties)).flatMap(([key, property]) => {
+    const value = obj(property).value;
+    return typeof value === "boolean" || typeof value === "number" && Number.isFinite(value) || typeof value === "string" && value.length <= 8192 ? [[key, value]] : [];
+  }));
+  Object.assign(manifest.userProperties, overrides);
   let assetBytes = 0, videoBytes = 0, totalPixels = 0, passCount = 0, passPixels = 0;
   let audioBytes = 0;
   async function soundAsset(name: string) {
@@ -102,8 +113,9 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
     const system = new Map([["systemfont_sansserif", "sans-serif"], ["systemfont_serif", "serif"], ["systemfont_monospace", "monospace"], ["systemfont_arial", "Arial, sans-serif"]]).get(name);
     if (system) return `@system:${system}`;
     if (!/^fonts\/.+\.(ttf|otf|woff2?)$/i.test(name)) throw new Error("Invalid scene font path");
-    const bytes = await read(name);
-    if (bytes.length < 12 || bytes.length > 16 * 1024 * 1024) throw new Error("Scene font exceeds size limit");
+    // Full CJK fonts can exceed 16 MiB; retain per-file and scene-wide bounds.
+    const bytes = await read(name, 32 * 1024 * 1024);
+    if (bytes.length < 12) throw new Error("Invalid scene font signature");
     const signature = bytes.toString("ascii", 0, 4);
     const mimeType = bytes.readUInt32BE(0) === 0x10000 ? "font/ttf" : ({ OTTO: "font/otf", wOFF: "font/woff", wOF2: "font/woff2" } as Record<string, string>)[signature];
     if (!mimeType) throw new Error("Invalid scene font signature");
@@ -178,7 +190,7 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
     const mapped: (string | null)[] = [null];
     for (let i = 1; i < refs.length; i++) mapped[i] = typeof refs[i] === "string" && !String(refs[i]).startsWith("_rt_") ? await texture(refs[i] as string) : null;
     const defines = Object.entries(combos).map(([key, value]) => { if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !Number.isInteger(value)) throw new Error(`Invalid shader combo: ${key}=${JSON.stringify(value)}`); return `#define ${key} ${value}\n`; }).join("");
-    return { vertex: prelude + defines + browserEffectGlsl(vertex, combos), fragment: prelude + defines + browserEffectGlsl(fragment, combos), uniforms, scripts: scripts.size ? [...scripts.values()] : undefined, textures: mapped, repeats: name === "effects/waterripple" ? [2] : ["effects/pulse", "effects/clouds", "effects/lightshafts"].includes(name) ? [1] : [] };
+    return { vertex: prelude + defines + browserEffectGlsl(vertex, combos), fragment: prelude + defines + browserFragmentGlsl(browserEffectGlsl(fragment, combos)), uniforms, scripts: scripts.size ? [...scripts.values()] : undefined, textures: mapped, repeats: name === "effects/waterripple" ? [2] : ["effects/pulse", "effects/clouds", "effects/lightshafts"].includes(name) ? [1] : [] };
   }
   async function particle(file: string, common: Pick<SceneParticles, "id" | "origin" | "scale" | "angle" | "parallax">, overrides: SceneValues, depth = 0): Promise<SceneParticles> {
     if (depth > 3) throw new Error("Particle child system nesting exceeds limit");
@@ -227,6 +239,7 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
     return passes;
   }
   const objects = array(scene.objects);
+  const controlsVideos = objects.some(o => Object.values(o).some(v => typeof obj(v).script === "string" && /\bgetVideoTexture\s*\(/.test(obj(v).script as string)));
   const parentIds = new Set(objects.map(o => o.parent).filter(p => typeof p === "number"));
   if (objects.length > 256) throw new Error("Too many scene objects");
   for (const raw of objects) {
@@ -253,7 +266,7 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
       scripts.push({ property, source: binding.script, properties: Object.fromEntries(Object.entries(obj(binding.scriptproperties)).map(([k, v]) => [k, obj(v).value ?? v])) });
       o[property] = binding.value;
     }
-    if ((o.visible === false || obj(o.visible).value === false) && !scripts.length && !timelines.length && !(typeof o.id === "number" && parentIds.has(o.id))) continue;
+    if ((o.visible === false || obj(o.visible).value === false) && !scripts.length && !timelines.length && !(typeof o.id === "number" && parentIds.has(o.id)) && !(controlsVideos && o.image)) continue;
     if (o.sound) {
       const files = Array.isArray(o.sound) ? o.sound : [o.sound];
       if (!files.length || files.length > 32 || (manifest.sounds?.length || 0) >= 16 || files.some(f => typeof f !== "string")) throw new Error("Invalid scene sound playlist");
@@ -271,7 +284,11 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
     if (scripts.length && o.particle) throw new Error("Particle property scripts are not supported yet");
     const common = { id: num(o.id, 0), origin: sceneVector(o.origin, [0, 0, 0]), scale: sceneVector(o.scale, [1, 1, 1]), angle: sceneVector(o.angles, [0, 0, 0])[2], parallax: sceneVector(o.parallaxDepth, [1, 1]), scripts: scripts.length ? scripts : undefined, visible: o.visible !== false, alignment: String(o.alignment || "center"), parent: o.parent as number | undefined, attachment: o.attachment as string | undefined, parallaxInherited: o.parent !== undefined && o.parallaxDepth === undefined };
     Object.assign(common, { timelines: timelines.length ? timelines : undefined, disablePropagation: o.disablepropagation === true });
-    if (o.text !== undefined) {
+    if (o.camera !== undefined) {
+      if (o.camera !== "default" || o.parent !== undefined || sceneVector(o.angles, [0, 0, 0]).some(n => n !== 0) || manifest.layers.some(l => l.camera)) throw new Error("Unsupported scene camera");
+      if (o.path && array((await json(String(o.path))).paths).length) throw new Error("Animated camera paths are not supported yet");
+      manifest.layers.push({ ...common, group: true, solid: false, name: String(o.name || ""), size: [1, 1], color: [1, 1, 1], alpha: 1, texture: "@transparent", blending: "translucent", colorBlendMode: 0, passes: [], camera: { zoom: Math.max(.01, Math.min(100, num(o.zoom, 1))) } });
+    } else if (o.text !== undefined) {
       if (manifest.layers.filter(l => l.text).length >= 16) throw new Error("Too many scene text layers");
       if (o.blockalign) throw new Error("Justified text layout is not supported yet");
       const source = obj(o.text), value = typeof o.text === "string" ? o.text : String(source.value ?? "");
@@ -321,18 +338,24 @@ export async function compileBrowserScene(id: string): Promise<Compiled> {
       const basePasses = customBase ? [await effectPass(base, {})] : [];
       if (customBase && ++passCount > 512) throw new Error("Too many scene effect passes");
       const passes = await layerEffects(o.effects, size, basePasses);
+      const composition = base.shader === "composelayer";
+      if (composition) {
+        if (o.copybackground || passes.length) throw new Error("Composition background copying and post-effects are not supported yet");
+        if (manifest.layers.filter(l => l.composition).length >= 8) throw new Error("Too many composition layers");
+        passPixels += width * height;
+      }
       if (procedural && !passes.length) throw new Error("Procedural scene layer has no drawing effect");
       if (key === "@scene" || ("frames" in info && info.frames.length)) passPixels += Math.ceil(size[0]) * Math.ceil(size[1]);
       if (passPixels > 128 * 1024 * 1024) throw new Error("Scene framebuffer allocation exceeds 512 MiB");
       const colorBlendMode = num(o.colorBlendMode, 0);
-      if (![0, 2, 6, 7, 9, 14].includes(colorBlendMode)) throw new Error(`Unsupported scene image blend mode: ${colorBlendMode}`);
+      if (![0, 2, 6, 7, 9, 14, 21, 31].includes(colorBlendMode)) throw new Error(`Unsupported scene image blend mode: ${colorBlendMode}`);
       let reflection;
       if (obj(base.combos).REFLECTION) {
         if (base.shader !== "genericimage2") throw new Error(`Unsupported reflective material: ${base.shader}`);
         const constants = obj(base.constantshadervalues);
         if (refs[1]) reflection = { normal: await texture(refs[1]), roughness: Math.max(0, Math.min(1, num(constants.roughness, .5))), metallic: Math.max(0, Math.min(1, num(constants.metallic, .5))), reflectivity: Math.max(0, Math.min(1, num(constants.reflectivity, 1))) };
       }
-      manifest.layers.push({ ...common, name: String(o.name || ""), size, color: sceneVector(o.color, [1, 1, 1]), alpha: num(o.alpha, 1), texture: key, blending: String(base.blending || "translucent"), colorBlendMode, passes, reflection, mesh });
+      manifest.layers.push({ ...common, name: String(o.name || ""), size, color: sceneVector(o.color, [1, 1, 1]), alpha: num(o.alpha, 1), texture: composition ? "@transparent" : key, blending: String(base.blending || "translucent"), colorBlendMode, passes, reflection, mesh, composition: composition || undefined });
       // Only already-authorized image resources are available to createLayer.
       // A model template does not inherit the placed layer's tint or effects.
       if (typeof o.image === "string" && !mesh && !reflection && key !== "@scene") {

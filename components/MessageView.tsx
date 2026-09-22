@@ -693,6 +693,7 @@ function AssistantMessageView({
         {errorMessage && (
           isInterrupted ? (
             <div
+              className="wallpaper-inset"
               role="status"
               style={{
                 display: "flex",
@@ -712,6 +713,7 @@ function AssistantMessageView({
             </div>
           ) : (
             <div
+              className="wallpaper-inset"
               role="alert"
               style={{
                 display: "flex",
@@ -833,7 +835,8 @@ const ThinkingBlock = memo(function ThinkingBlock({ block, duration, sessionId, 
         {expanded && (
           <div className="thinking-details">
             <div
-              className={`thinking-output${error ? " thinking-output-error" : ""}`}
+              className={`thinking-output wallpaper-inset${error ? " thinking-output-error" : ""}`}
+              data-wallpaper-contrast={error ? "off" : undefined}
             >
               {loading ? t("messageView.loadingThinking") : error ?? (block.deferred ? content : block.thinking)}
             </div>

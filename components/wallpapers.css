@@ -1,6 +1,30 @@
 .wallpaper-backdrop { position: fixed; inset: 0; z-index: 0; pointer-events: none; background: var(--bg); }
 .wallpaper-backdrop > img, .wallpaper-backdrop > video, .wallpaper-backdrop > canvas, .wallpaper-backdrop > iframe { display: block; width: 100%; height: 100%; }
 .wallpaper-shell { position: relative; z-index: 1; }
+html[data-wallpaper="on"][data-wallpaper-palette="on"] {
+  --accent: var(--wallpaper-palette-accent);
+  --accent-strong: var(--wallpaper-palette-accent-strong);
+  --accent-hover: var(--wallpaper-palette-accent-hover);
+  --accent-fill-hover: var(--wallpaper-palette-accent-fill-hover);
+  --accent-2: var(--wallpaper-palette-accent-2);
+  --on-accent: var(--wallpaper-palette-on-accent);
+  --bg: var(--wallpaper-palette-bg);
+  --bg-panel: var(--wallpaper-palette-bg-panel);
+  --bg-hover: var(--wallpaper-palette-bg-hover);
+  --bg-selected: var(--wallpaper-palette-bg-selected);
+  --bg-subtle: var(--wallpaper-palette-bg-subtle);
+  --border: var(--wallpaper-palette-border);
+  --user-bg: var(--wallpaper-palette-user-bg);
+  --tool-bg: var(--wallpaper-palette-tool-bg);
+}
+html[data-wallpaper="on"][data-wallpaper-palette="on"] ::selection {
+  background: var(--accent-strong); color: var(--on-accent);
+}
+html[data-wallpaper="on"][data-wallpaper-palette="on"] :is(input[type="checkbox"], progress) { accent-color: var(--accent); }
+html[data-wallpaper="on"][data-wallpaper-palette="on"] progress { appearance: none; border: 0; background: var(--bg-selected); }
+html[data-wallpaper="on"][data-wallpaper-palette="on"] progress::-webkit-progress-bar { background: var(--bg-selected); }
+html[data-wallpaper="on"][data-wallpaper-palette="on"] progress::-webkit-progress-value { background: var(--accent); }
+html[data-wallpaper="on"][data-wallpaper-palette="on"] progress::-moz-progress-bar { background: var(--accent); }
 html[data-wallpaper="on"] .wallpaper-panel-toggle {
   background: var(--wallpaper-glass) !important;
   backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
@@ -16,15 +40,23 @@ html[data-wallpaper="on"] #new-session-workspace option { background: var(--bg-p
 .wallpaper-workspace-select select { appearance: none; padding-right: 36px !important; }
 html[data-wallpaper="on"] .wallpaper-workspace-select select { background: transparent !important; }
 .wallpaper-select-chevron { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); display: flex; pointer-events: none; color: var(--text); }
-:root { --wallpaper-ink-dark: #000000; --wallpaper-ink-light: #fdfdfd; }
-::highlight(wallpaper-ink-dark) { color: var(--wallpaper-ink-dark); text-shadow: 0 0 2px rgb(255 255 255 / .28); }
-::highlight(wallpaper-ink-light) { color: var(--wallpaper-ink-light); text-shadow: 0 0 2px rgb(0 0 0 / .38); }
-html[data-wallpaper="on"] [data-wallpaper-ink="dark"] { color: var(--wallpaper-ink-dark) !important; caret-color: var(--wallpaper-ink-dark); }
-html[data-wallpaper="on"] [data-wallpaper-ink="light"] { color: var(--wallpaper-ink-light) !important; caret-color: var(--wallpaper-ink-light); }
+html[data-wallpaper="on"][data-wallpaper-text] {
+  --text: var(--wallpaper-unified-text);
+  --text-muted: var(--wallpaper-unified-text);
+  --text-dim: var(--wallpaper-unified-text);
+  --bg: var(--wallpaper-reading-bg);
+  --bg-panel: var(--wallpaper-reading-bg-panel);
+  --bg-hover: var(--wallpaper-reading-bg-hover);
+  --bg-selected: var(--wallpaper-reading-bg-selected);
+  --bg-subtle: var(--wallpaper-reading-bg-subtle);
+  --user-bg: var(--wallpaper-reading-user-bg);
+  --tool-bg: var(--wallpaper-reading-tool-bg);
+  --border: var(--wallpaper-reading-border);
+}
+html[data-wallpaper="on"][data-wallpaper-text] [data-wallpaper-ink="global"] { color: var(--wallpaper-unified-text) !important; caret-color: var(--wallpaper-unified-text); }
 html[data-wallpaper="on"] [data-wallpaper-ink]::placeholder { color: inherit; opacity: 1; }
-/* Native editable controls cannot contain per-character Highlight ranges. */
-html[data-wallpaper="on"] :is(input, textarea, select)[data-wallpaper-ink="dark"] { text-shadow: .75px 0 var(--wallpaper-ink-light), -.75px 0 var(--wallpaper-ink-light), 0 .75px var(--wallpaper-ink-light), 0 -.75px var(--wallpaper-ink-light); }
-html[data-wallpaper="on"] :is(input, textarea, select)[data-wallpaper-ink="light"] { text-shadow: .75px 0 var(--wallpaper-ink-dark), -.75px 0 var(--wallpaper-ink-dark), 0 .75px var(--wallpaper-ink-dark), 0 -.75px var(--wallpaper-ink-dark); }
+html[data-wallpaper="on"][data-wallpaper-text-polarity="dark"] [data-wallpaper-ink="global"] { text-shadow: 0 0 2px rgb(255 255 255 / .28); }
+html[data-wallpaper="on"][data-wallpaper-text-polarity="light"] [data-wallpaper-ink="global"] { text-shadow: 0 0 2px rgb(0 0 0 / .38); }
 html[data-wallpaper="on"] .wallpaper-shell { background: transparent !important; }
 html[data-wallpaper="on"] .wallpaper-shell .shell-topbar { z-index: 40; }
 html[data-wallpaper="on"] { --wallpaper-glass: color-mix(in srgb, var(--bg-panel) var(--wallpaper-glass-opacity, 35%), transparent); }
@@ -36,8 +68,29 @@ html[data-wallpaper="on"] .wallpaper-shell :is(.wallpaper-user, .wallpaper-assis
 html[data-wallpaper="on"] .wallpaper-assistant { width: fit-content; min-width: min(220px, 100%); max-width: 100%; padding: 10px 12px; border-radius: 8px; box-sizing: border-box; }
 html[data-wallpaper="on"] .wallpaper-user { border-radius: 8px; padding-bottom: 3px; }
 html[data-wallpaper="on"] .wallpaper-user .chat-message-card { background: transparent !important; box-shadow: none !important; }
+/* Table fills must let the enclosing message or preview's frosted surface show through. */
+html[data-wallpaper="on"] .wallpaper-shell .markdown-body th { background: color-mix(in srgb, var(--text) 6%, transparent) !important; }
+html[data-wallpaper="on"] .wallpaper-shell .markdown-body tbody tr:nth-child(even) td { background: color-mix(in srgb, var(--text) 3%, transparent) !important; }
+html[data-wallpaper="on"][data-glass="clear"] .wallpaper-shell .markdown-body :is(th, tbody tr:nth-child(even) td) { background: transparent !important; }
 html[data-wallpaper="on"] .wallpaper-shell .sidebar-project { background: transparent !important; }
 html[data-wallpaper="on"] .wallpaper-shell .provider-usage-account { background: transparent !important; }
+/* These controls sit on glass already; keep its blur visible without stacking it. */
+html[data-wallpaper="on"] .wallpaper-shell :is(.wallpaper-inset, .markdown-inline-code) {
+  background: color-mix(in srgb, var(--bg-panel) 10%, transparent) !important;
+}
+html[data-wallpaper="on"] .wallpaper-shell .markdown-inline-code { color: inherit; }
+html[data-wallpaper="on"] .wallpaper-shell button.wallpaper-inset:not(:disabled):is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent) !important;
+}
+html[data-wallpaper="on"][data-glass="clear"] .wallpaper-shell :is(.wallpaper-inset, .markdown-inline-code) { background: transparent !important; }
+html[data-wallpaper="on"][data-glass="clear"] .wallpaper-shell button.wallpaper-inset:not(:disabled):is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--accent) 8%, transparent) !important;
+}
+html[data-wallpaper="on"] .composer-primary-action.wallpaper-inset {
+  border: 1px solid var(--border) !important; box-shadow: none !important;
+}
+html[data-wallpaper="on"] .composer-primary-action.wallpaper-inset:not([data-wallpaper-ink]) { color: var(--text) !important; }
+html[data-wallpaper="on"] .composer-primary-action.wallpaper-inset:disabled { opacity: .5; }
 /* Let glass text surfaces show through the right panel's nested native fills. */
 html[data-wallpaper="on"] .right-panel-container {
   --bg: transparent;
@@ -51,6 +104,13 @@ html[data-wallpaper="on"][data-glass="default"] .right-panel-container .wallpape
   background: color-mix(in srgb, var(--accent) 12%, var(--wallpaper-glass)) !important;
 }
 html[data-wallpaper="on"] .session-item-row { margin-top: 2px; }
+html[data-wallpaper="on"][data-wallpaper-palette="on"] .session-item-row:has(.session-item-button[aria-current="true"]) {
+  background: color-mix(in srgb, var(--accent) 16%, var(--wallpaper-selection-base, var(--wallpaper-glass))) !important;
+}
+html[data-wallpaper="on"][data-wallpaper-palette="on"] .session-item-row:hover {
+  background: color-mix(in srgb, var(--accent) 10%, var(--wallpaper-selection-base, var(--wallpaper-glass))) !important;
+}
+html[data-wallpaper="on"][data-wallpaper-palette="on"][data-glass="clear"] { --wallpaper-selection-base: transparent; }
 html[data-wallpaper="on"][data-glass="clear"] .wallpaper-shell :is(.wallpaper-user, .wallpaper-assistant, .chat-input-shell, .wallpaper-surface, .sidebar-project-header, .session-item-row, .sidebar-settings-row, .shell-topbar) {
   background: transparent !important; backdrop-filter: none; -webkit-backdrop-filter: none;
 }
@@ -60,8 +120,43 @@ html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell :is(.sidebar-co
 html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell :is(.wallpaper-user, .wallpaper-assistant, .chat-input-shell, .wallpaper-surface, .sidebar-project-header, .session-item-row, .sidebar-settings-row) {
   backdrop-filter: none; -webkit-backdrop-filter: none; background: transparent !important;
 }
+/* Popovers overlap chat content, so keep their own glass even in pane-wide mode. */
+html[data-wallpaper="on"][data-glass="default"] .wallpaper-shell .chat-input-shell:has(.composer-toolbar .picker-panel),
+html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell .wallpaper-chat-pane:has(.composer-toolbar .picker-panel) {
+  position: relative; isolation: isolate;
+  background: transparent !important; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+/* A background sibling avoids making the composer a clipped backdrop root. */
+html[data-wallpaper="on"][data-glass="default"] .wallpaper-shell .chat-input-shell:has(.composer-toolbar .picker-panel)::before,
+html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell .wallpaper-chat-pane:has(.composer-toolbar .picker-panel)::before {
+  content: ""; position: absolute; inset: 0; z-index: -1; pointer-events: none; border-radius: inherit;
+  background: var(--wallpaper-glass); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell .wallpaper-chat-pane:has(.composer-toolbar .picker-panel)::before {
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+html[data-wallpaper="on"] .wallpaper-shell .composer-toolbar .picker-panel {
+  background: var(--wallpaper-glass) !important;
+  backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+}
+html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell .composer-toolbar .picker-panel {
+  backdrop-filter: blur(20px); -webkit-backdrop-filter: blur(20px);
+}
+html[data-wallpaper="on"] .wallpaper-shell .composer-toolbar :is(.picker-search, .picker-thinking-card, .picker-nested-providers) {
+  background: color-mix(in srgb, var(--bg-panel) 10%, transparent);
+}
+html[data-wallpaper="on"][data-glass="clear"] .wallpaper-shell .composer-toolbar :is(.picker-panel, .picker-search, .picker-thinking-card, .picker-nested-providers) {
+  background: transparent !important; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+html[data-wallpaper="on"] .wallpaper-shell .composer-toolbar :is(.picker-row, .picker-thinking-card):is(:hover, :focus-visible) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent) !important;
+}
+html[data-wallpaper="on"] .wallpaper-shell .composer-toolbar :is(.picker-row[data-active="true"], .picker-thinking-card[data-active="true"], button.wallpaper-inset[aria-expanded="true"]) {
+  background: color-mix(in srgb, var(--accent) 20%, transparent) !important;
+}
 .wallpaper-controls { display: inline-flex; align-items: center; flex-shrink: 0; gap: 2px; }
 .wallpaper-shell .shell-topbar-overflow[data-compact="true"] > .shell-topbar-overflow-content { flex-wrap: wrap; height: auto; min-height: 48px; }
+.wallpaper-shell .shell-topbar-overflow[data-compact="true"] .wallpaper-controls { flex-wrap: wrap; min-width: 0; max-width: 100%; }
 .wallpaper-controls button, .wallpaper-icon { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 30px; flex-shrink: 0; border: 1px solid transparent; border-radius: 5px; color: var(--text-muted); background: transparent; cursor: pointer; }
 .wallpaper-controls button:hover, .wallpaper-icon:hover { background: var(--bg-hover); color: var(--text); }
 .wallpaper-controls button[aria-pressed="true"] { border-color: var(--border); background: var(--bg-selected); color: var(--accent); }
@@ -74,6 +169,10 @@ html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell :is(.wallpaper-
 .wallpaper-options label { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .wallpaper-options input[type="range"] { width: 110px; accent-color: var(--accent); }
 .wallpaper-options output { min-width: 4ch; }
+.wallpaper-palette-swatches { display: inline-flex; gap: 3px; }
+.wallpaper-palette-swatches i { display: block; width: 12px; height: 12px; border-radius: 50%; border: 1px solid var(--border); background: var(--accent); }
+.wallpaper-palette-swatches i:nth-child(2) { background: var(--accent-strong); }
+.wallpaper-palette-swatches i:nth-child(3) { background: var(--bg-selected); }
 .wallpaper-crop { margin-bottom: 20px; padding-bottom: 18px; border-bottom: 1px solid var(--border); }
 .wallpaper-crop-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
 .wallpaper-crop-heading h3 { margin: 0; flex: 1; font-size: 13px; font-weight: 500; }
@@ -89,6 +188,9 @@ html[data-wallpaper="on"][data-glass="frosted"] .wallpaper-shell :is(.wallpaper-
 .wallpaper-crop-sliders input { width: 100%; min-width: 0; accent-color: var(--accent); }
 .wallpaper-crop-sliders output { text-align: right; font-variant-numeric: tabular-nums; }
 .wallpaper-settings input:not([type="range"]):not([type="file"]):not([type="checkbox"]), .wallpaper-settings select { min-width: 0; border: 1px solid var(--border); border-radius: 5px; background: var(--bg); color: var(--text); padding: 7px 9px; font-size: 13px; }
+.wallpaper-text-color { display: inline-flex; align-items: center; gap: 6px; }
+.wallpaper-settings .wallpaper-text-color input[type="color"] { width: 32px; height: 32px; padding: 2px; flex-shrink: 0; cursor: pointer; }
+.wallpaper-text-color input[type="text"] { width: 9ch; font-family: monospace; }
 .wallpaper-folder input { flex: 1; }
 .wallpaper-library-heading { justify-content: space-between; font-size: 12px; }
 .wallpaper-library-heading input { width: min(220px, 70%); }

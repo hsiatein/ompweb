@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Check, FolderPlus, Image, RefreshCw, Upload, Trash2, Video, Box, Power } from "lucide-react";
 import { useWallpaperPreferences } from "@/hooks/useWallpaper";
 import { useI18n } from "@/lib/i18n";
-import { wallpaperUrl, type WallpaperInfo } from "@/lib/wallpapers";
+import { wallpaperUrl, type WallpaperInfo, type WallpaperTextMode } from "@/lib/wallpapers";
 import { WallpaperControls } from "./WallpaperControls";
 import { WallpaperCrop } from "./WallpaperCrop";
 
@@ -12,6 +12,12 @@ export function WallpapersConfig() {
   const { locale } = useI18n();
   const zh = locale.startsWith("zh");
   const { preferences: p, update } = useWallpaperPreferences();
+  const [colorDraft, setColorDraft] = useState<string | null>(null);
+  const colorInput = colorDraft ?? p.textColor;
+  function commitColor() {
+    if (/^#[0-9a-f]{6}$/i.test(colorInput)) update({ textColor: colorInput.toLowerCase() });
+    setColorDraft(null);
+  }
   const [library, setLibrary] = useState<Library>({ wallpapers: [], roots: [], warnings: [] });
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -77,7 +83,20 @@ export function WallpapersConfig() {
     </div>
     <div className="wallpaper-options">
       <WallpaperControls />
-      <label><input type="checkbox" checked={p.adaptiveText} onChange={e => update({ adaptiveText: e.target.checked })} />{zh ? "文字自动对比度" : "Adaptive text contrast"}</label>
+      <label><input type="checkbox" checked={p.adaptiveText} onChange={e => update({ adaptiveText: e.target.checked })} />{zh ? "文字配色" : "Text colors"}</label>
+      <select aria-label={zh ? "文字配色模式" : "Text color mode"} disabled={!p.adaptiveText} value={p.textMode} onChange={e => update({ textMode: e.target.value as WallpaperTextMode })}>
+        <option value="fixed">{zh ? "固定颜色" : "Fixed color"}</option>
+        <option value="auto">{zh ? "自动黑白" : "Automatic black / white"}</option>
+        <option value="material">{zh ? "Material 配色" : "Material colors"}</option>
+      </select>
+      {p.textMode === "fixed" && <span className="wallpaper-text-color">
+        <input type="color" aria-label={zh ? "文字颜色" : "Text color"} disabled={!p.adaptiveText} value={p.textColor} onChange={e => { setColorDraft(null); update({ textColor: e.target.value }); }} />
+        <input type="text" aria-label={zh ? "文字颜色 HEX" : "Text color HEX"} disabled={!p.adaptiveText} value={colorInput} maxLength={7} spellCheck={false} onChange={e => setColorDraft(e.target.value)} onBlur={commitColor} onKeyDown={e => {
+          if (e.key === "Enter") { e.preventDefault(); commitColor(); }
+          if (e.key === "Escape") setColorDraft(null);
+        }} />
+      </span>}
+      <label><input type="checkbox" checked={p.adaptivePalette} onChange={e => update({ adaptivePalette: e.target.checked })} />{zh ? "壁纸配色" : "Wallpaper colors"}<span className="wallpaper-palette-swatches" aria-hidden="true"><i /><i /><i /></span></label>
       <label>{zh ? "填充" : "Fit"}<select value={p.fit} onChange={e => update({ fit: e.target.value as "cover" | "contain" })}><option value="cover">{zh ? "铺满" : "Cover"}</option><option value="contain">{zh ? "完整显示" : "Contain"}</option></select></label>
       <label>{zh ? "亮度" : "Brightness"}<input aria-label={zh ? "壁纸亮度" : "Wallpaper brightness"} type="range" min="20" max="100" value={p.brightness} onChange={e => update({ brightness: Number(e.target.value) })} /><output>{p.brightness}%</output></label>
       <label>{zh ? "玻璃不透明度" : "Glass opacity"}<input aria-label={zh ? "玻璃不透明度" : "Glass opacity"} type="range" min="0" max="100" disabled={p.glass === "clear"} value={p.glassOpacity} onChange={e => update({ glassOpacity: Number(e.target.value) })} /><output>{p.glassOpacity}%</output></label>

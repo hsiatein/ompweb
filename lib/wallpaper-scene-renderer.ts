@@ -15,6 +15,7 @@ import type { ScriptLayerState } from "./wallpaper-property-scripts";
 import type { SceneScriptInput } from "./wallpaper-script-bones";
 import { pointInSceneMesh, sceneCursorPosition } from "./wallpaper-scene-pointer";
 import { audioUniformSpectrum, type WallpaperAudio } from "./wallpaper-audio";
+import { SceneTextScheduler } from "./wallpaper-text-scheduler";
 
 const vertex = `precision highp float;
 attribute vec3 a_Position;
@@ -33,9 +34,10 @@ uniform float u_BlendMode;
 uniform sampler2D u_Background;
 uniform vec2 u_RenderSize;
 float vivid(float a,float b){return b<0.5?(b==0.0?0.0:max(1.0-(1.0-a)/(2.0*b),0.0)):(b==1.0?1.0:min(a/(2.0*(1.0-b)),1.0));}
+float reflectBlend(float a,float b){return b==1.0?1.0:min(a*a/(1.0-b),1.0);}
 void main(){gl_FragColor=texture2D(g_Texture0,v_Uv)*u_Color;gl_FragColor.a*=v_Opacity;
-if(u_BlendMode==6.0||u_BlendMode==14.0){vec3 a=texture2D(u_Background,gl_FragCoord.xy/u_RenderSize).rgb;vec3 b=gl_FragColor.rgb;
-vec3 c=u_BlendMode==6.0?max(a,b):vec3(vivid(a.r,b.r),vivid(a.g,b.g),vivid(a.b,b.b));gl_FragColor=vec4(mix(a,c,gl_FragColor.a),1.0);}
+if(u_BlendMode==6.0||u_BlendMode==14.0||u_BlendMode==21.0){vec3 a=texture2D(u_Background,gl_FragCoord.xy/u_RenderSize).rgb;vec3 b=gl_FragColor.rgb;
+vec3 c=u_BlendMode==6.0?max(a,b):u_BlendMode==21.0?vec3(reflectBlend(a.r,b.r),reflectBlend(a.g,b.g),reflectBlend(a.b,b.b)):vec3(vivid(a.r,b.r),vivid(a.g,b.g),vivid(a.b,b.b));gl_FragColor=vec4(mix(a,c,gl_FragColor.a),1.0);}
 if(u_BlendMode==7.0)gl_FragColor.rgb*=gl_FragColor.a;
 if(u_BlendMode==2.0)gl_FragColor.rgb=mix(vec3(1.0),gl_FragColor.rgb,gl_FragColor.a);}`;
 const num = (v: unknown, d: number) => typeof v === "number" && Number.isFinite(v) ? v : d;
@@ -347,6 +349,9 @@ export class BrowserSceneRenderer {
   private camera: T.OrthographicCamera;
   private textures = new Map<string, T.Texture>();
   private videos: HTMLVideoElement[] = [];
+  private videoPlayback = new Map<string, boolean>();
+  private videoStarting = new WeakSet<HTMLVideoElement>();
+  private compositionTargets: T.WebGLRenderTarget[] = [];
   private audio?: WallpaperAudio;
   private spectrum = Array<number>(128).fill(0);
   private audioRequired = false;
@@ -354,6 +359,7 @@ export class BrowserSceneRenderer {
   private scriptUniforms = new Map<number, Record<string, T.IUniform>[]>();
   private fonts: FontFace[] = [];
   private textLayers: import("./wallpaper-scene-text").SceneTextTexture[] = [];
+  private textScheduler = new SceneTextScheduler();
   private skins: { id: number; animation: SceneMeshAnimator; positions: T.BufferAttribute; opacities: T.BufferAttribute }[] = [];
   private propertyScripts?: import("./wallpaper-property-scripts").ScenePropertyScripts;
   private scriptWarnings: string[] = [];
@@ -550,6 +556,7 @@ gl_FragColor=vec4(max(vec3(0.0),2.0*c-gray)*excess,1.0);}`;
         }
         result.addLayer(layer, i);
       }
+      result.bindCompositions();
       const createParticle = (definition: SceneParticles): ParticleSystem => {
         const refraction = definition.refraction;
         if (refraction) result.background ??= new T.FramebufferTexture(1, 1);
@@ -575,7 +582,8 @@ gl_FragColor=vec4(max(vec3(0.0),2.0*c-gray)*excess,1.0);}`;
   }
   private addLayer(layer: SceneLayer, order: number) {
     const capture = layer.texture === "@scene";
-    if (capture || layer.reflection || [6, 14].includes(layer.colorBlendMode)) this.background ??= new T.FramebufferTexture(1, 1);
+    const backgroundBlend = [6, 14, 21].includes(layer.colorBlendMode);
+    if (capture || layer.reflection || backgroundBlend) this.background ??= new T.FramebufferTexture(1, 1);
     if (layer.reflection && !this.reflectionBuffer) {
       const target = new T.WebGLRenderTarget(1, 1, { depthBuffer: false, generateMipmaps: true, minFilter: T.LinearMipmapLinearFilter });
       const geometry = plane(2, 2); this.geometries.push(geometry);
@@ -668,8 +676,8 @@ if(u_BlendMode==6.0`) : fragment;
       mat.uniforms[`u_ClipSize${i}`] = { value: new T.Vector2(...layer.size) };
       mat.uniforms[`u_ClipTexture${i}`] = { value: this.textures.get(clip.texture) };
     }
-    if ([6, 14].includes(layer.colorBlendMode)) mat.blending = T.NoBlending;
-    if (layer.blending === "additive" || layer.colorBlendMode === 9) mat.blending = T.AdditiveBlending;
+    if (backgroundBlend) mat.blending = T.NoBlending;
+    if (layer.blending === "additive" || layer.colorBlendMode === 9 || layer.colorBlendMode === 31) mat.blending = T.AdditiveBlending;
     if (layer.colorBlendMode === 7 || layer.colorBlendMode === 2) {
       mat.blending = T.CustomBlending;
       mat.blendSrc = layer.colorBlendMode === 7 ? T.OneFactor : T.ZeroFactor;
@@ -701,7 +709,7 @@ if(u_BlendMode==6.0`) : fragment;
     if (layer.group) finalGeometry.setDrawRange(0,0);
     bindMatrix(mesh, mat); this.materials.push(mat); this.scene.add(mesh);
     this.effectLayers.push({ mesh, size: layer.size, materials: this.passes.slice(firstPass).map(p => p.mat).filter(m => m.uniforms.g_EffectTextureProjectionMatrix) });
-    if (capture || layer.reflection || [6, 14].includes(layer.colorBlendMode)) {
+    if (capture || layer.reflection || backgroundBlend) {
       const before = mesh.onBeforeRender, passes = capture ? this.passes.slice(firstPass) : [];
       for (const pass of passes) pass.deferred = true;
       mesh.onBeforeRender = (...args) => {
@@ -736,6 +744,39 @@ if(u_BlendMode==6.0`) : fragment;
       return { id: s.id, world: mesh.matrixWorld.toArray(), local: s.animation.localTransforms() };
     });
   }
+  private bindCompositions() {
+    for (const layer of this.data.layers.filter(l => l.composition)) {
+      const { mesh } = this.scriptLayers.get(layer.id)!;
+      const mat = mesh.material as T.RawShaderMaterial;
+      const target = new T.WebGLRenderTarget(1, 1, { depthBuffer: false });
+      this.compositionTargets.push(target);
+      const scene = new T.Scene(), children: { source: T.Mesh; copy: T.Mesh }[] = [];
+      for (const candidate of this.data.layers) {
+        let parent = this.data.layers.find(l => l.id === candidate.parent);
+        while (parent && !parent.composition) parent = this.data.layers.find(l => l.id === parent!.parent);
+        if (parent?.id !== layer.id) continue;
+        const source = this.scriptLayers.get(candidate.id)!.mesh;
+        const copy = new T.Mesh(source.geometry, source.material);
+        copy.matrixAutoUpdate = false; copy.frustumCulled = false;
+        copy.onBeforeRender = (...args) => source.onBeforeRender(...args);
+        source.layers.set(1); scene.add(copy); children.push({source,copy});
+      }
+      mat.uniforms.g_Texture0.value = target.texture;
+      mat.fragmentShader = mat.fragmentShader.replace('texture2D(g_Texture0,v_Uv)*u_Color', 'texture2D(g_Texture0,gl_FragCoord.xy/u_RenderSize)')
+        .replace('gl_FragColor.a*=v_Opacity;', 'if(gl_FragColor.a>0.0)gl_FragColor.rgb/=gl_FragColor.a;gl_FragColor*=u_Color;gl_FragColor.a*=v_Opacity;');
+      const before = mesh.onBeforeRender;
+      mesh.onBeforeRender = (...args) => {
+        const previous = this.renderer.getRenderTarget();
+        const width = previous?.width || this.canvas.width, height = previous?.height || this.canvas.height;
+        if (target.width !== width || target.height !== height) target.setSize(width, height);
+        for (const {source,copy} of children) { copy.matrix.copy(source.matrixWorld); copy.matrixWorldNeedsUpdate = true; copy.visible = source.visible; copy.renderOrder = source.renderOrder; }
+        this.renderer.setRenderTarget(target); this.renderer.render(scene, args[2]);
+        this.renderer.setRenderTarget(previous);
+        mat.uniforms.u_RenderSize.value.set(width, height);
+        before.apply(mesh, args);
+      };
+    }
+  }
   private updatePropertyScripts(dt: number) {
     if (!this.propertyScripts) return;
     this.flushCursorMove();
@@ -760,6 +801,7 @@ if(u_BlendMode==6.0`) : fragment;
         target = this.scriptLayers.get(state.id)!;
       }
       const { layer, mesh } = target;
+      if (state.videoPlaying !== undefined) this.videoPlayback.set(layer.texture, state.videoPlaying);
       if (Object.keys(state.boneWrites || {}).length) {
         const skin = this.skins.find(s => s.id === state.id);
         if (!skin) throw new Error("Missing scripted skeleton");
@@ -787,12 +829,24 @@ if(u_BlendMode==6.0`) : fragment;
     this.particles.forEach((p, i) => { p.mesh.renderOrder = frame.layers.length + i; });
     this.canvas.dataset.scriptLayerCount = String(frame.layers.length);
     this.audioRequired ||= frame.audio;
+    this.syncVideoPlayback();
+  }
+  private syncVideoPlayback() {
+    for (const [key, texture] of this.textures) {
+      if (!(texture instanceof T.VideoTexture)) continue;
+      const video = texture.image as HTMLVideoElement;
+      if (this.paused || document.hidden || this.videoPlayback.get(key) === false) video.pause();
+      else if (video.paused && !this.videoStarting.has(video)) {
+        this.videoStarting.add(video);
+        void video.play().catch(e => { if (!this.disposed && e.name !== "AbortError") this.onError(`Scene video playback failed: ${e.message}`); }).finally(() => this.videoStarting.delete(video));
+      }
+    }
   }
   setAudio(audio: WallpaperAudio) { this.audio = audio; for (const command of this.pendingSoundCommands.splice(0)) audio.command(command); }
   setPaused(paused: boolean) {
     if (paused) this.pointerRelease();
     this.paused = paused; this.last = 0;
-    for (const video of this.videos) { if (paused || document.hidden) video.pause(); else void video.play().catch(e => this.onError(`Scene video playback failed: ${e.message}`)); }
+    this.syncVideoPlayback();
     this.schedule();
   }
   private schedule() { if (this.ready && !this.frame && !this.disposed && !document.hidden && (!this.paused || this.dirty)) this.frame = requestAnimationFrame(this.tick); }
@@ -808,6 +862,12 @@ if(u_BlendMode==6.0`) : fragment;
     for (const skin of this.skins) if (skin.animation.update(this.time)) { skin.positions.needsUpdate = true; skin.opacities.needsUpdate = true; }
     if (this.propertyScripts && this.skins.length) this.updateLayerTransforms(dt);
     this.updatePropertyScripts(dt);
+    const cameraLayer = this.data.layers.find(l => l.camera);
+    if (cameraLayer) {
+      const origin = this.scriptStates.get(cameraLayer.id)?.origin || cameraLayer.origin;
+      this.camera.position.set(origin[0] - this.data.width / 2, origin[1] - this.data.height / 2, 0);
+      if (this.camera.zoom !== cameraLayer.camera!.zoom) { this.camera.zoom = cameraLayer.camera!.zoom; this.camera.updateProjectionMatrix(); }
+    }
     for (const skin of this.skins) {
       const { layer, mesh } = this.scriptLayers.get(skin.id)!;
       for (let i=0; i<(layer.mesh?.clips?.length || 0); i++) (mesh.material as T.RawShaderMaterial).uniforms[`u_ClipMatrix${i}`].value.copy(skin.animation.clippingMatrix(i));
@@ -818,15 +878,15 @@ if(u_BlendMode==6.0`) : fragment;
       if (value) { uniform.value = value; this.audioRequired = true; }
     }
     const audioWarning = "Audio-reactive effects need wallpaper audio or an explicitly shared system-audio source";
+    this.textScheduler.update(this.textLayers, this.time, Date.now());
     const warnings = (this.data.warnings || []).filter(w => w !== audioWarning);
     warnings.push(...this.scriptWarnings);
+    for (const text of this.textLayers) if (text.warning) warnings.push(text.warning);
     if (this.audioRequired && !this.audio?.hasSource) warnings.push(audioWarning);
     if (this.audio?.state.error) warnings.push(this.audio.state.error);
     this.canvas.dataset.audioPlayback = this.audio?.state.error ? "error" : this.audio?.state.blocked ? "blocked" : this.audio?.hasSource ? "ready" : "none";
     const warningJson = JSON.stringify(warnings);
     if (this.canvas.dataset.compatibilityWarnings !== warningJson) this.canvas.dataset.compatibilityWarnings = warningJson;
-    const textDeadline = performance.now() + 8;
-    for (const text of this.textLayers) text.update(this.time, Date.now(), Math.max(0, textDeadline - performance.now()));
     const dpr = window.devicePixelRatio || 1, fit = this.canvas.style.objectFit;
     if (this.resizeDirty || this.dpr !== dpr || this.fit !== fit) {
       const { width: w, height: h } = sceneOutputSize(this.data, this.canvas.getBoundingClientRect(), dpr, fit, this.renderer.capabilities.maxTextureSize);
@@ -918,6 +978,7 @@ if(u_BlendMode==6.0`) : fragment;
     this.bloom?.dispose(); this.output?.dispose(); this.composer?.dispose();
     this.background?.dispose();
     this.reflectionBuffer?.target.dispose();
+    for (const target of this.compositionTargets) target.dispose();
     for (const p of this.particles) p.dispose(); for (const target of new Set(this.passes.map(p => p.target))) target.dispose();
     for (const m of this.materials) m.dispose(); for (const g of this.geometries) g.dispose();
     for (const video of this.videos) { video.pause(); video.removeAttribute("src"); video.load(); }

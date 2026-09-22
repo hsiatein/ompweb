@@ -1370,7 +1370,8 @@ export class AgentSessionWrapper {
 
       case "host_tool_result": {
         if (typeof command.id === "string") this.pendingHostTools.delete(command.id);
-        await this.proc.sendCommand(command as { type: string });
+        // Host replies retain OMP's correlation ID and have no command response.
+        this.proc.sendFrame(command as { type: string });
         return null;
       }
 
@@ -1388,7 +1389,7 @@ export class AgentSessionWrapper {
 
       case "host_uri_result": {
         if (typeof command.id === "string") this.pendingHostUris.delete(command.id);
-        await this.proc.sendCommand(command as { type: string });
+        this.proc.sendFrame(command as { type: string });
         return null;
       }
 

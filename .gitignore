@@ -26,6 +26,7 @@ coverage/
 *.png.png
 screenshots/
 /mockups/
+/ai-hardware-charts/
 
 # misc
 .DS_Store

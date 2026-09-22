@@ -5,6 +5,20 @@ export function normalizeFilePathSlashes(filePath: string): string {
   return filePath;
 }
 
+/** Resolve a raw host-tool path without interpreting URL escapes or fragments. */
+export function resolveWorkspaceFilePath(filePath: string, cwd?: string | null): string | null {
+  const raw = filePath.trim();
+  if (!raw || raw.includes("\0")) return null;
+  const normalized = normalizeFilePathSlashes(raw);
+  if (/^[a-zA-Z]:\//.test(normalized) || normalized.startsWith("/")) return normalized;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(raw) || !cwd) return null;
+
+  const base = normalizeFilePathSlashes(cwd);
+  if (!/^[a-zA-Z]:\//.test(base) && !base.startsWith("/")) return null;
+  const windows = /^[a-zA-Z]:\//.test(base) || base.startsWith("//");
+  return joinFilePath(base, windows ? raw.replace(/\\/g, "/") : raw);
+}
+
 export function encodeFilePathForApi(filePath: string): string {
   const normalized = normalizeFilePathSlashes(filePath);
   const isUnc = normalized.startsWith("//");

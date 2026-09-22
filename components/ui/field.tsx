@@ -658,7 +658,7 @@ export function ConfirmDialog({
               transition: "background var(--dur-fast) var(--ease-out-warm)",
             }}
             onMouseEnter={(e) => {
-              if (!busy) e.currentTarget.style.background = "var(--accent-hover)";
+              if (!busy) e.currentTarget.style.background = "var(--accent-fill-hover, var(--accent-hover))";
             }}
             onMouseLeave={(e) => {
               if (!busy)

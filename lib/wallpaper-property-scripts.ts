@@ -11,6 +11,7 @@ export interface ScriptLayerState {
   parallaxDepth: number[]; color: number[]; alpha: number; visible: boolean; alignment: string;
   shaderValues?: Record<string, number | number[]>[];
   boneWrites?: Record<string, number[]>;
+  videoPlaying?: boolean;
 }
 
 // This factory executes ONLY inside QuickJS. Scene code receives value-copy
@@ -60,7 +61,7 @@ const guest = String.raw`(function(input) {
   };
   const layers=[], states=new WeakMap(), scripts=[], buffers=[], pending=[], warnings=new Set(), timers=new Map(), soundCommands=[];
   const cursorEvents=['cursorDown','cursorUp','cursorClick','cursorMove','cursorEnter','cursorLeave'];
-  let activeScript;
+  let activeScript, moduleSaved;
   function invoke(script,fn,args,assign=false){
     select(script.spec);
     const previous=activeScript,commandCount=soundCommands.length;activeScript=script;
@@ -83,6 +84,7 @@ const guest = String.raw`(function(input) {
     for(const [k,n] of Object.entries(fields)) data[k]=vector(new (n===2?Vec2:Vec3)(...data[k]),n);
     const proxy=new Proxy(Object.create(null),{
       get(_,k){
+        if(k==='getVideoTexture'&&typeof data.videoPlaying==='boolean')return ()=>Object.freeze({play(){data.videoPlaying=true;},pause(){data.videoPlaying=false;},isPlaying(){return data.videoPlaying;}});
         if(k in fields) return new (fields[k]===2?Vec2:Vec3)(...data[k]);
         if(k==='size')return new Vec2(...data.size);
         if(k==='getAnimation')return name=>animations.get(proxy).find(a=>name===undefined?currentSpec?.id===data.id&&currentSpec.pass===undefined&&a.def.property===currentSpec.property:a.def.name===name)?.api;
@@ -169,7 +171,8 @@ const guest = String.raw`(function(input) {
     target[spec.property]=Array.isArray(old)?['x','y','z','w'].slice(0,old.length).map(k=>finite(v[k])):finite(v);
   }
   return {
-    select(json){select(JSON.parse(json));},
+    select(json){select(JSON.parse(json));moduleSaved=JSON.parse(stringify(states.get(current)));},
+    loadFailed(json){const spec=JSON.parse(json);select(spec);Object.assign(states.get(current),moduleSaved);warnings.add('SceneScript module disabled after an unsupported API or invalid value: layer '+spec.id+', '+spec.property);},
     pending(){const out=stringify(pending);pending.length=0;return out;},
     attach(exports,json){
       const spec=JSON.parse(json);
@@ -178,7 +181,7 @@ const guest = String.raw`(function(input) {
       select(spec);
       const script={spec,update:exports.update,...Object.fromEntries(cursorEvents.map(k=>[k,exports[k]]))};
       if(typeof exports.init==='function'&&!invoke(script,exports.init,[read(spec)],true))return;
-      if(typeof exports.applyUserProperties==='function'&&!invoke(script,exports.applyUserProperties,[{}]))return;
+      if(typeof exports.applyUserProperties==='function'&&!invoke(script,exports.applyUserProperties,[JSON.parse(stringify(config.userProperties))]))return;
       if(typeof exports.mediaPlaybackChanged==='function'&&!invoke(script,exports.mediaPlaybackChanged,[{state:MediaPlaybackEvent.PLAYBACK_STOPPED}]))return;
       scripts.push(script);
     },
@@ -234,7 +237,7 @@ export class ScenePropertyScripts {
   private deadline = 0;
   private disposed = false;
   private bindingCount = 0;
-  private constructor(vm: QuickJSContext, private data: BrowserScene) {
+  private constructor(vm: QuickJSContext, private data: BrowserScene, private partial: boolean) {
     this.vm = vm;
     vm.runtime.setMemoryLimit(16 * 1024 * 1024);
     vm.runtime.setMaxStackSize(256 * 1024);
@@ -242,10 +245,10 @@ export class ScenePropertyScripts {
     vm.runtime.setModuleLoader(sceneGuestModule);
   }
   static async create(data: BrowserScene, now = Date.now(), poses: ScriptBonePose[] = [], partial = false) {
-    const runner = new ScenePropertyScripts((await sceneScriptModule()).newContext(), data);
+    const runner = new ScenePropertyScripts((await sceneScriptModule()).newContext(), data, partial);
     try {
       runner.deadline = performance.now() + 500;
-      const initial = JSON.stringify({ now, partial, width: data.width, height: data.height, alignments: sceneAlignments, sounds: (data.sounds || []).map(s => ({id:s.id,name:s.name || "",volume:s.volume})), layers: data.layers.map(l => ({ ...state(l), bonePose: poses.find(p => p.id === l.id) })),
+      const initial = JSON.stringify({ now, partial, userProperties: data.userProperties || {}, width: data.width, height: data.height, alignments: sceneAlignments, sounds: (data.sounds || []).map(s => ({id:s.id,name:s.name || "",volume:s.volume})), layers: data.layers.map(l => ({ ...state(l), ...(data.textures?.some(t => t.key === l.texture && t.mimeType === "video/mp4") ? { videoPlaying: true } : {}), bonePose: poses.find(p => p.id === l.id) })),
         templates: Object.fromEntries(Object.entries(data.scriptTemplates || {}).map(([k, l]) => [k, state(l)])) });
       if (initial.length > 1024 * 1024) throw new Error("SceneScript initial state exceeds limit");
       const factory = runner.result(runner.vm.evalCode(guest));
@@ -266,7 +269,13 @@ export class ScenePropertyScripts {
         const spec = JSON.stringify({ id, pass, property: script.property, properties: script.properties });
         if (spec.length > 64 * 1024) throw new Error("SceneScript properties exceed limit");
         this.call("select", spec).dispose();
-        const exports = this.result(this.vm.evalCode(script.source, `binding-${this.bindingCount}.js`, { type: "module" }));
+        const evaluated = this.vm.evalCode(script.source, `binding-${this.bindingCount}.js`, { type: "module" });
+        if (evaluated.error && this.partial) {
+          evaluated.error.dispose();
+          this.call("loadFailed", spec).dispose();
+          continue;
+        }
+        const exports = this.result(evaluated);
         try { this.call("attach", spec, exports).dispose(); }
         catch { throw new Error(`SceneScript initialization failed for layer ${id}, ${pass === undefined ? "property" : `pass ${pass}`} ${script.property}`); }
         finally { exports.dispose(); }
@@ -325,6 +334,7 @@ export class ScenePropertyScripts {
       if (layer.angles[0] || layer.angles[1]) throw new Error("3D SceneScript rotations are not supported");
       if (!Number.isFinite(layer.alpha) || layer.alpha < 0 || layer.alpha > 1 || typeof layer.visible !== "boolean" || !sceneAlignments.includes(layer.alignment)) throw new Error("Invalid SceneScript appearance");
       const definition = layer.id < 0 ? this.data.scriptTemplates![layer.template!] : this.data.layers.find(l => l.id === layer.id)!;
+      if (layer.videoPlaying !== undefined && (typeof layer.videoPlaying !== "boolean" || !this.data.textures?.some(t => t.key === definition.texture && t.mimeType === "video/mp4"))) throw new Error("Invalid SceneScript video state");
       for(const [index,matrix] of Object.entries(layer.boneWrites??{})) {
         const bone=Number(index);
         if(!Number.isInteger(bone)||bone<0||bone>=(definition.mesh?.bones?.length??0)||!vector(matrix,16)||Math.abs(matrix[3])+Math.abs(matrix[7])+Math.abs(matrix[11])+Math.abs(matrix[15]-1)>1e-6)throw new Error("Invalid SceneScript bone output");

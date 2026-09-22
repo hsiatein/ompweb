@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-require-imports -- Node-only browser QA runner. */
 const fs=require('node:fs');
 const assert=require('node:assert/strict');
 const sharp=require('sharp');
@@ -20,6 +21,19 @@ const scene=(layers,textures)=>({version:1,width:100,height:100,clearColor:[0,0,
   ['branch',scene([layer({passes:[pass('gl_FragColor=vec4(1.0-texture2D(g_Texture0,uv).rgb,1.0);',{0:-1}),pass('gl_FragColor=vec4(texture2D(g_Texture0,uv).rgb*0.5,1.0);',{0:0}),pass('gl_FragColor=mix(texture2D(g_Texture0,uv),texture2D(g_Texture1,uv),0.5);',{0:1,1:-1})]})],textures),[77,89,102]],
   ['lighten',scene([layer(),layer({id:2,texture:'top',colorBlendMode:6})],textures),[77,153,153]],
   ['vivid',scene([layer(),layer({id:2,texture:'top',colorBlendMode:14})],textures),[26,179,77]],
+  ['reflect-blend',scene([layer(),layer({id:2,texture:'top',colorBlendMode:21})],textures),[34,153,134]],
+  ['reflect-blend-transparent',scene([layer(),layer({id:2,texture:'top',colorBlendMode:21,alpha:0})],textures),[51,102,153]],
+  ['reflect-blend-white',scene([layer(),layer({id:2,texture:'white',colorBlendMode:21})],textures),[255,255,255]],
+  ['reflect-blend-tint',scene([layer(),layer({id:2,texture:'white',color:[.4,.8,.2],alpha:.5,colorBlendMode:21})],textures),[34,153,134]],
+  ['reflect-blend-stacked',scene([layer(),layer({id:2,texture:'top',colorBlendMode:21}),layer({id:3,texture:'white',colorBlendMode:21,alpha:.5})],textures),[145,204,194]],
+  ['additive-blend',scene([layer(),layer({id:2,texture:'top',colorBlendMode:31})],textures),[102,204,179]],
+  ['additive-blend-transparent',scene([layer(),layer({id:2,texture:'top',colorBlendMode:31,alpha:0})],textures),[51,102,153]],
+  ['additive-blend-saturated',scene([layer(),layer({id:2,texture:'white',colorBlendMode:31,alpha:.5})],textures),[179,230,255]],
+  ['composition-empty',scene([layer(),layer({id:2,texture:'@transparent',composition:true,colorBlendMode:21})],textures),[51,102,153]],
+  ['composition-reflect',scene([layer(),layer({id:2,texture:'@transparent',composition:true,colorBlendMode:21}),layer({id:3,parent:2,origin:[0,0,0],texture:'top'})],textures),[34,153,134]],
+  ['composition-alpha',scene([layer(),layer({id:2,texture:'@transparent',composition:true}),layer({id:3,parent:2,origin:[0,0,0],texture:'top'})],textures),[77,153,102]],
+  ['composition-hidden-child',scene([layer(),layer({id:2,texture:'@transparent',composition:true,colorBlendMode:21}),layer({id:3,parent:2,origin:[0,0,0],texture:'top',visible:false})],textures),[51,102,153]],
+  ['composition-nested',scene([layer(),layer({id:2,texture:'@transparent',composition:true,colorBlendMode:21}),layer({id:3,parent:2,origin:[0,0,0],texture:'@transparent',composition:true}),layer({id:4,parent:3,origin:[0,0,0],texture:'top'})],textures),[34,153,134]],
   ['quad',scene([layer({texture:'quad'})],textures)],
   ['procedural',scene([layer({texture:'@transparent',passes:[pass('gl_FragColor=vec4(0.2,0.4,0.6,1.0);',{0:-1})]})],textures),[51,102,153]],
   ['refraction',{...scene([layer({texture:'quad'})],textures.map(t=>t.key==='normal'?{...t,format:8}:t)),particles:[{id:5,origin:[50,50,0],scale:[1,1,1],angle:0,parallax:[0,0],texture:'white',blending:'translucent',refraction:{texture:'normal',amount:.8},config:{maxcount:1,emitter:[{name:'sphererandom',instantaneous:1,rate:0}],initializer:[{name:'sizerandom',min:100,max:100}]},overrides:{},children:[]}]}],

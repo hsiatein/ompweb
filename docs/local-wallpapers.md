@@ -93,6 +93,18 @@ normal-map refraction samples the previously drawn framebuffer locally.
 Texture formats: RGBA8888, RG88, R8, DXT1/3/5 and encoded image payloads;
 single-image sprite atlases also animate image layers. Original shader
 resources are adapted to GLSL ES rather than substituted with CSS motion.
+
+Scene user controls can be overridden locally without changing workshop files.
+Create `~/.omp/agent/web-wallpapers/scene-properties/<wallpaper-id>.json` with
+an object mapping the author's property names to primitive values, for example
+`{"show_prompt":false}`. The ID comes from `/api/wallpapers`; property names come
+from `project.json`'s `general.properties`. Only declared properties with matching
+value types are applied, both to direct bindings and `applyUserProperties`.
+Scripts and animation wrappers are retained. These server-local settings apply
+to all OMPWeb clients using that wallpaper, not to Wallpaper Engine itself.
+Restart OMPWeb to apply changes immediately; otherwise the scene cache expires
+after five minutes and the client must reload the wallpaper.
+
 When camera parallax is enabled, layer anchors receive the native static offset
 `(origin - sceneCenter) * cameraAmount * layerDepth` independently on each axis,
 before mouse/shake displacement. This does not scale the layer geometry and
@@ -226,27 +238,60 @@ missing slideshow links and the renamed city image. It reloads after viewport
 resizing because its original script allocates its canvas only once. Presets
 require their corresponding base project to be installed locally.
 
-## Adaptive text contrast
+## Wallpaper text colors
 
-Wallpaper settings enable adaptive text contrast by default. The app samples
-visible image/video/WebGL wallpaper pixels locally at 2 Hz and composites the
-text's ancestor background fills (including glass opacity). Neutral black or
-near-white ink is selected using WCAG relative luminance and contrast, retaining
-the previous ink while it remains readable to reduce flicker. No samples leave
-the browser. This is an approximation on blurred, moving or textured backgrounds,
-not a guarantee of WCAG conformance for every rendered pixel.
+Settings offer three modes for one global ordinary-text color, independent of
+the accent-palette checkbox. Existing enabled installations default to Material;
+an explicitly disabled text preference remains disabled. Fixed mode accepts a
+color swatch or six-digit HEX value and preserves it exactly. Automatic mode
+chooses literal black or white against the visible crop's average linear
+luminance, accounting for wallpaper brightness. Material mode uses Google's
+HCT and `DynamicColor.foregroundTone` to target 7:1 against that overall tone,
+with chroma capped at 6. Extreme black/white is used when a tint cannot meet the
+target. Some middle tones cannot reach 7:1 with any foreground.
 
-CSS Custom Highlight ranges preserve React text nodes, text selection/copy and
-streaming updates. Words crossing a light/dark boundary can use individual
-grapheme colors. Code blocks, inline code, diffs, alerts and explicit status
-colors retain their semantic styling. Native inputs/selects keep a single text
-color sampled near their text origin, with a fine opposite-color halo for text
-crossing mixed backgrounds; the workspace arrow is sampled separately.
-Scroll, resizing and text/layout mutations invalidate cached ranges. The
-settings checkbox disables this behavior without changing the normal theme.
+Solid panel fills are paired with the selected foreground and adjusted to at
+least 4.5:1, including custom mid-tone colors. Glass retains its configured
+opacity. One global color cannot guarantee contrast at every pixel of a mixed,
+moving or textured wallpaper, especially in clear mode; increase glass opacity
+when necessary. Color sampling shares the palette Worker and its 15-second
+cadence. Substantial tone changes, like hue changes, require two samples;
+explicit brightness and crop adjustments reset that delay. No pixels leave the
+browser. If sampling is unavailable, neutral theme-derived text is used; fixed
+colors work without a Worker. Web wallpapers contribute only their preview.
 
-Sandboxed web wallpaper iframes and browsers without the Custom Highlight API
-retain theme text colors; their isolation is not weakened to read pixels.
+Visible text and ordinary controls receive `data-wallpaper-ink="global"` without
+replacing React text nodes. Copy, selection, streaming and math remain intact.
+Code, diffs, alerts, status colors and genuinely filled accent buttons retain
+their semantic styling. Glass inset controls, including composer actions, use
+the global ink. Table headers remain translucent. Disabling text colors or the
+wallpaper removes these overrides and restores native theme text. All choices
+are persisted per browser and shared between its tabs.
+
+## Wallpaper colors
+
+The opt-in **Wallpaper colors** checkbox generates restrained theme accents and
+subtle surface tints from the visible wallpaper crop. Google Material Color
+Utilities runs in a dedicated, lazily loaded browser Worker; samples are at most
+96 by 96 pixels and never leave the browser. Chroma is capped at 32, with neutral
+surfaces capped at 4. Monochrome images remain neutral instead of using the
+library's default blue fallback.
+
+Initial colors apply once the wallpaper is ready. Subsequent samples are at
+least 15 seconds apart and a substantially different hue must appear in two
+consecutive samples before it replaces the palette. Crop and viewport changes
+resample after a 500 ms debounce without creating new Workers. Hidden tabs stop
+sampling. Sandboxed web wallpapers use their local preview image; absent or
+unreadable previews fall back to the ordinary theme without relaxing isolation.
+
+With text colors enabled, the selected ink determines the palette's light/dark
+surface polarity; otherwise the native theme controls it. Buttons, selection,
+borders and progress indicators use the palette. Semantic colors retain their
+roles. Filled
+accent buttons preserve their contrasting foreground. Readability over arbitrary
+transparent wallpaper backgrounds still depends on glass and adaptive text.
+Disabling the checkbox or wallpaper, load failure and unmount remove the palette
+overrides and restore the selected theme. The preference is local to each browser.
 
 ## Safe deployment
 

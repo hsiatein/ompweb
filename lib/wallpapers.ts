@@ -1,4 +1,5 @@
 export type GlassMode = "default" | "clear" | "frosted";
+export type WallpaperTextMode = "fixed" | "auto" | "material";
 export interface WallpaperInfo {
   id: string;
   title: string;
@@ -18,6 +19,9 @@ export interface WallpaperPreferences {
   glassOpacity: number;
   paused: boolean;
   adaptiveText: boolean;
+  textMode: WallpaperTextMode;
+  textColor: string;
+  adaptivePalette: boolean;
   volume: number;
   muted: boolean;
 }
@@ -35,6 +39,9 @@ export function parseWallpaperPreferences(raw: string | null): WallpaperPreferen
     glassOpacity: typeof v.glassOpacity === "number" && Number.isFinite(v.glassOpacity) ? Math.max(0, Math.min(100, v.glassOpacity)) : 35,
     paused: v.paused === true,
     adaptiveText: v.adaptiveText !== false,
+    textMode: v.textMode === "fixed" || v.textMode === "auto" ? v.textMode : "material",
+    textColor: typeof v.textColor === "string" && /^#[0-9a-f]{6}$/i.test(v.textColor) ? v.textColor.toLowerCase() : "#e4e6ed",
+    adaptivePalette: v.adaptivePalette === true,
     volume: typeof v.volume === "number" && Number.isFinite(v.volume) ? Math.max(0, Math.min(100, v.volume)) : 50,
     muted: v.muted === true,
   };

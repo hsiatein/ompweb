@@ -1,6 +1,33 @@
 import tokenize from "glsl-tokenizer/string";
 import { lowerSceneNumericExpressions } from "./wallpaper-glsl-numeric";
 
+// Fragment varyings are read-only in GLSL, while WE's HLSL shaders may mutate
+// their per-fragment copies, including from helper functions.
+export function browserFragmentGlsl(source: string) {
+  const tokens = tokenize(source);
+  const significant = tokens.filter(t => !["whitespace", "line-comment", "block-comment", "preprocessor", "eof"].includes(t.type));
+  const copies: string[] = [];
+  for (let i = 0; i < significant.length; i++) {
+    if (significant[i].data !== "varying" || significant[i + 2]?.type !== "ident" || significant[i + 3]?.data !== ";") continue;
+    const declaration = significant[i + 2], name = declaration.data, type = significant[i + 1].data;
+    const written = significant.some((t, j) => {
+      if (t.data !== name || t === declaration) return false;
+      let end = j + 1;
+      if (significant[end]?.data === ".") end += 2;
+      if (significant[end]?.data === "[") { while (end < significant.length && significant[end].data !== "]") end++; end++; }
+      return ["=", "+=", "-=", "*=", "/=", "++", "--"].includes(significant[end]?.data);
+    });
+    if (!written) continue;
+    let copy = `we_mutable_${name}`;
+    while (significant.some(t => t.data === copy)) copy += "_";
+    for (const t of tokens) if (t.type === "ident" && t.data === name && t !== declaration) t.data = copy;
+    significant[i + 3].data += `\n${type} ${copy};`;
+    copies.push(`${copy}=${name};`);
+  }
+  if (!copies.length) return source;
+  return tokens.filter(t => t.type !== "eof").map(t => t.data).join("").replace(/void\s+main\s*\(\s*(?:void\s*)?\)\s*\{/, match => match + copies.join(""));
+}
+
 export function sceneAudioUniforms(source: string, combos: Record<string, number>) {
   const stack: { disabled: boolean; audioBranch: boolean }[] = [];
   const lines = source.split(/\r?\n/).filter(line => {

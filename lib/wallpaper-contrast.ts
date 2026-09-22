@@ -19,6 +19,29 @@ export function composite(background: Rgb, foreground: number[]): Rgb {
   const alpha = foreground[3] / 255;
   return background.map((c, i) => c * (1 - alpha) + foreground[i] * alpha) as Rgb;
 }
+export function chooseRegionInk(backgrounds: Rgb[], previous?: Ink): Ink {
+  if (!backgrounds.length) return previous ?? "dark";
+  const scores = { dark: 0, light: 0 }, readable = { dark: 0, light: 0 };
+  for (const background of backgrounds) for (const ink of ["dark", "light"] as const) {
+    const ratio = contrast(INK[ink], background);
+    // Log contrast balances the whole region instead of letting one bright pixel dominate.
+    scores[ink] += Math.log(ratio);
+    if (ratio >= 4.5) readable[ink]++;
+  }
+  const best = scores.dark >= scores.light ? "dark" : "light";
+  if (previous && (readable[previous] / backgrounds.length >= .9
+    || (scores[best] - scores[previous]) / backgrounds.length < Math.log(1.15))) return previous;
+  return best;
+}
+export function regionSamplePoints(rect: { left: number; top: number; right: number; bottom: number }) {
+  const points: { x: number; y: number }[] = [];
+  if (rect.right <= rect.left || rect.bottom <= rect.top) return points;
+  for (let y = 0; y < 6; y++) for (let x = 0; x < 6; x++) points.push({
+    x: rect.left + (rect.right - rect.left) * (x + .5) / 6,
+    y: rect.top + (rect.bottom - rect.top) * (y + .5) / 6,
+  });
+  return points;
+}
 export function mediaRect(source: { width: number; height: number }, viewport: { width: number; height: number }, fit: "cover" | "contain", x: number, y: number) {
   const scale = (fit === "cover" ? Math.max : Math.min)(viewport.width / source.width, viewport.height / source.height);
   const width = source.width * scale, height = source.height * scale;

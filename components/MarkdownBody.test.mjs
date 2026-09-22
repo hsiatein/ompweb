@@ -20,6 +20,14 @@ function renderMarkdown(markdown) {
   );
 }
 
+test("inline code keeps its dedicated glass selector separate from fenced code", () => {
+  const html = renderMarkdown("Use `useTheme` and `--bg`.\n\n| Token | Value |\n| --- | --- |\n| `--accent` | Custom |\n\n```js\nconst theme = 'light';\n```");
+  assert.equal((html.match(/class="markdown-inline-code"/g) ?? []).length, 3);
+  assert.match(html, /<code class="markdown-inline-code"[^>]*>--accent<\/code>/);
+  assert.match(html, /markdown-code-block/);
+  assert.doesNotMatch(html, /<pre[^>]*class="[^"]*markdown-inline-code/);
+});
+
 test("opens non-file markdown links in a safe new tab", () => {
   const html = renderMarkdown("[docs](https://example.com/docs)");
 

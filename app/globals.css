@@ -2880,17 +2880,11 @@ html.dark .dropdown-surface :is(select, option) {
   align-items: center;
   gap: 4px;
   height: 100%;
+  flex-shrink: 0;
 }
 .shell-topbar-center {
-  position: absolute;
-  top: 4.5px;
-  left: 50%;
-  transform: translateX(-50%);
-  width: clamp(0px, calc(100% - 520px), 400px);
-  pointer-events: none;
-}
-.shell-topbar-center > .shell-topbar-breadcrumb {
-  pointer-events: auto;
+  flex: 1 1 0;
+  min-width: 0;
 }
 
 /* Hide only the breadcrumb when the sidebars leave too little title space. */

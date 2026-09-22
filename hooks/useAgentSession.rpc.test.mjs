@@ -300,8 +300,8 @@ const assistantMsg = (id, text) => ({
 });
 
 /** Mount + hydrate, then send a prompt and open the stream. Returns the ES. */
-async function startRun(sid, message) {
-  const w = await mountSession(sid);
+async function startRun(sid, message, options = {}) {
+  const w = await mountSession(sid, undefined, options);
   assert.equal(w.latest.loading, false, "hydration must complete");
   assert.equal(w.latest.agentRunning, false);
 
@@ -325,6 +325,60 @@ async function startRun(sid, message) {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+test("open_file resolves a Windows workspace path and checks access before opening", async () => {
+  resetWorld();
+  primeSession("s1", [userMsg("u0", "q")]);
+  const opened = [];
+  const { es } = await startRun("s1", "open image", {
+    session: { ...sessionInfo("s1"), cwd: "D:\\work\\project" },
+    onOpenFile: (...args) => opened.push(args),
+  });
+  world.holds.push({ match: (method, url) => method === "GET" && url.startsWith("/api/files/"), produce: async () => ({ value: { mime: "image/png" } }) });
+  await act(async () => {
+    es.emit({ type: "host_tool_call", id: "open-image", toolName: "open_file", arguments: { path: "charts\\01_\u5386\u53f2\u4ef7\u683c.png" } });
+  });
+  await settle(10);
+  const path = "D:/work/project/charts/01_\u5386\u53f2\u4ef7\u683c.png";
+  assert.deepEqual(opened, [[path, "01_\u5386\u53f2\u4ef7\u683c.png", "s1"]]);
+  const check = callsTo("GET", "/api/files/")[0];
+  assert.equal(decodeURIComponent(check.url), `/api/files/${path}?type=meta&sessionId=s1`);
+  const reply = callsTo("POST", "/api/agent/").find((c) => c.body?.type === "host_tool_result").body;
+  assert.deepEqual(reply, { type: "host_tool_result", id: "open-image", isError: false, result: { content: [{ type: "text", text: `Opened ${path}` }] } });
+});
+
+for (const [status, error] of [[404, "Not found"], [403, "Access denied"]]) {
+  test(`open_file reports ${status} instead of claiming success`, async () => {
+    resetWorld();
+    primeSession("s1", [userMsg("u0", "q")]);
+    const opened = [];
+    const { es } = await startRun("s1", "open image", { onOpenFile: (...args) => opened.push(args) });
+    world.holds.push({ match: (_method, url) => url.startsWith("/api/files/"), produce: async () => ({ status, value: { error } }) });
+    await act(async () => es.emit({ type: "host_tool_call", id: "open-bad", toolName: "open_file", arguments: { path: "chart.png" } }));
+    await settle(10);
+    assert.deepEqual(opened, []);
+    const reply = callsTo("POST", "/api/agent/").find((c) => c.body?.type === "host_tool_result").body;
+    assert.equal(reply.id, "open-bad");
+    assert.equal(reply.isError, true);
+    assert.ok(reply.result.content[0].text.endsWith(error));
+  });
+}
+
+test("open_file does not open a late file after its session unmounts", async () => {
+  resetWorld();
+  primeSession("s1", [userMsg("u0", "q")]);
+  const opened = [];
+  const { w, es } = await startRun("s1", "open image", { onOpenFile: (...args) => opened.push(args) });
+  const check = Promise.withResolvers();
+  world.holds.push({ match: (_method, url) => url.startsWith("/api/files/"), produce: () => check.promise });
+  await act(async () => es.emit({ type: "host_tool_call", id: "open-late", toolName: "open_file", arguments: { path: "chart.png" } }));
+  w.unmount();
+  check.resolve({ value: { mime: "image/png" } });
+  await settle(10);
+  assert.deepEqual(opened, []);
+  const reply = callsTo("POST", "/api/agent/").find((c) => c.body?.type === "host_tool_result").body;
+  assert.equal(reply.isError, true);
+});
 
 test("full run over fake SSE: optimistic bubble, coalesced streaming, terminal reload", async () => {
   resetWorld();

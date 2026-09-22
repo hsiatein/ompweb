@@ -1420,21 +1420,25 @@ export function AppShell() {
       const closed = !details.open;
       const display = content.style.display;
       const visibility = content.style.visibility;
+      const width = content.style.width;
       content.style.visibility = "hidden";
       content.style.display = "flex";
+      content.style.width = "max-content";
       details.open = true;
       const children = Array.from(content.children).filter((child) =>
         !["absolute", "fixed"].includes(getComputedStyle(child).position));
       const contentStyle = getComputedStyle(content);
       const headerStyle = getComputedStyle(header);
       const rightStyle = getComputedStyle(right);
+      // DOM rectangles include interface zoom; clientWidth and CSS gaps do not.
+      const scale = header.getBoundingClientRect().width / header.offsetWidth || 1;
       const controlsWidth = children.reduce((width, child) => {
         const style = getComputedStyle(child);
-        return width + child.getBoundingClientRect().width
+        return width + child.getBoundingClientRect().width / scale
           + parseFloat(style.marginLeft) + parseFloat(style.marginRight);
       }, 0) + Math.max(0, children.length - 1) * parseFloat(contentStyle.columnGap);
       const required = controlsWidth
-        + (tools.firstElementChild?.getBoundingClientRect().width ?? 0)
+        + (tools.firstElementChild?.getBoundingClientRect().width ?? 0) / scale
         + parseFloat(getComputedStyle(tools).columnGap)
         + parseFloat(headerStyle.paddingLeft) + parseFloat(headerStyle.paddingRight)
         + parseFloat(headerStyle.columnGap)
@@ -1443,6 +1447,7 @@ export function AppShell() {
       if (closed) details.open = false;
       content.style.display = display;
       content.style.visibility = visibility;
+      content.style.width = width;
       const compact = required > header.clientWidth;
       if (compact && details.dataset.compact !== "true" && hadControlsFocus) {
         restoreToolsFocusRef.current = true;
@@ -1871,7 +1876,7 @@ export function AppShell() {
                 }}
               >
                 <div
-                  className="shell-topbar-breadcrumb"
+                  className="shell-topbar-breadcrumb wallpaper-inset"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",
@@ -1885,7 +1890,7 @@ export function AppShell() {
                     color: "var(--text-muted)",
                     whiteSpace: "nowrap",
                     minWidth: 0,
-                    maxWidth: "min(400px, 30vw)",
+                    maxWidth: "min(400px, 100%)",
                     flexShrink: 1,
                   }}
                 >
@@ -1998,7 +2003,7 @@ export function AppShell() {
                   title={speedTitle}
                   role="img"
                   aria-label={speedTitle}
-                  className="shell-metric-pill shell-pill-extra"
+                  className="shell-metric-pill shell-pill-extra wallpaper-inset"
                   style={{
                     display: "inline-flex",
                     alignItems: "center",

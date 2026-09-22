@@ -19,6 +19,21 @@ export function lowerSceneNumericExpressions(source: string, combos: Record<stri
   const lookup = (name: string) => { for (let i = scopes.length - 1; i >= 0; i--) if (scopes[i].has(name)) return scopes[i].get(name); };
   const functionTypes = new Map<string, string>(), parameters = new Map<number, Map<string, string>>();
   const edits: { start: number; end: number; text: string }[] = [];
+  const conditions = new Map<number, number>();
+  for (let i = 0; i < tokens.length; i++) {
+    if (!["for", "if", "while"].includes(tokens[i].data) || tokens[i + 1]?.data !== "(") continue;
+    let depth = 1, end = i + 2;
+    const separators: number[] = [];
+    for (; end < tokens.length; end++) {
+      if (tokens[end].data === "(") depth++;
+      if (tokens[end].data === ")" && --depth === 0) break;
+      if (tokens[end].data === ";" && depth === 1) separators.push(end);
+    }
+    if (end >= tokens.length) continue;
+    if (tokens[i].data === "for") {
+      if (separators.length === 2) conditions.set(separators[0] + 1, separators[1]);
+    } else conditions.set(i + 2, end);
+  }
   let remainder = false;
   const precedence: Record<string, number> = { "||": 1, "&&": 2, "==": 3, "!=": 3, "<": 4, ">": 4, "<=": 4, ">=": 4, "+": 5, "-": 5, "*": 6, "/": 6, "%": 6 };
 
@@ -91,6 +106,13 @@ export function lowerSceneNumericExpressions(source: string, combos: Record<stri
 
   for (let i = 0; i < tokens.length; i++) {
     const token = tokens[i];
+    const conditionEnd = conditions.get(i);
+    if (conditionEnd !== undefined && conditionEnd > i) {
+      const value = expression(i, conditionEnd);
+      if (value?.changed && !source.slice(value.start, value.end).includes("#")) edits.push({ start: value.start, end: value.end, text: value.text });
+      i = conditionEnd - 1;
+      continue;
+    }
     if (token.data === "{") { scopes.push(parameters.get(i) || new Map()); continue; }
     if (token.data === "}") { if (scopes.length > 2) scopes.pop(); continue; }
     if (!(numeric.test(token.data) || token.data === "void") || tokens[i + 1]?.type !== "ident") continue;

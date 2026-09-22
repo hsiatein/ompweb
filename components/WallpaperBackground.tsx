@@ -7,6 +7,7 @@ import { X } from "lucide-react";
 import { SceneWallpaper } from "./SceneWallpaper";
 import { WebWallpaper } from "./WebWallpaper";
 import { useWallpaperContrast } from "@/hooks/useWallpaperContrast";
+import { useWallpaperPalette } from "@/hooks/useWallpaperPalette";
 
 export function WallpaperBackground() {
   const { preferences: p, update } = useWallpaperPreferences();
@@ -16,6 +17,7 @@ export function WallpaperBackground() {
   const [sceneError, setSceneError] = useState("");
   const video = useRef<HTMLVideoElement>(null);
   useWallpaperContrast(p, loadedId === p.id && failedId !== p.id);
+  useWallpaperPalette(p, loadedId === p.id && failedId !== p.id);
   useEffect(() => {
     const root = document.documentElement;
     root.dataset.wallpaper = p.id && loadedId === p.id && failedId !== p.id ? "on" : "off";

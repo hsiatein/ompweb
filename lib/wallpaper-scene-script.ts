@@ -1,5 +1,6 @@
 import type { QuickJSContext, QuickJSHandle, QuickJSWASMModule } from "quickjs-emscripten-core";
 import type { SceneText } from "./wallpaper-scene-types";
+import { MIN_TEXT_SCRIPT_BUDGET_MS } from "./wallpaper-text-scheduler";
 
 let modulePromise: Promise<QuickJSWASMModule> | undefined;
 export function sceneScriptModule() {
@@ -86,6 +87,7 @@ export class SceneTextScript {
   }
   update(value: string, now = Date.now(), budgetMs = 8) {
     if (this.disposed) throw new Error("SceneScript is disposed");
+    if (!Number.isFinite(budgetMs) || budgetMs < MIN_TEXT_SCRIPT_BUDGET_MS) return value;
     this.deadline = performance.now() + Math.min(8, budgetMs);
     const timestamp = this.vm.newNumber(now), input = this.vm.newString(value);
     try {

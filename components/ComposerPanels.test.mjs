@@ -35,6 +35,8 @@ test("attaches todo plan and subagent roster with live states", () => {
   assert.match(html, /Wire panels/);
   assert.match(html, /Subagents/);
   assert.match(html, /scout/);
+  assert.match(html, /class="composer-subagents-panel wallpaper-surface /);
+  assert.match(html, /class="ui-focus-ring wallpaper-inset"/);
   assert.match(html, /Map the surface/);
   assert.match(html, /worker/);
   assert.match(html, /aria-label="1 running · 2 total"/);
@@ -52,6 +54,7 @@ test("panels start collapsed with live summary in their headers", () => {
   assert.match(html, /0\/1 complete/);
   assert.match(html, /Subagents/);
   assert.match(html, /aria-label="1 running · 1 total"/);
+  assert.match(html, /class="composer-subagents-panel wallpaper-surface /);
   assert.doesNotMatch(html, />1 running · 1 total</);
   // ...but both panels start collapsed: toggle headers only, no content.
   assert.match(html, /aria-expanded="false"/);
@@ -204,4 +207,3 @@ test("zero context tokens never print a null gauge", () => {
   assert.doesNotMatch(html, /null/);
   assert.match(html, /read/);
 });
-

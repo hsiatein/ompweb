@@ -2,10 +2,12 @@ import { CanvasTexture, LinearFilter, NoColorSpace } from "three";
 import { SceneTextScript } from "./wallpaper-scene-script";
 import type { SceneLayer } from "./wallpaper-scene-types";
 import { sceneTextLines } from "./wallpaper-text-layout";
+import { MIN_TEXT_SCRIPT_BUDGET_MS } from "./wallpaper-text-scheduler";
 
 export class SceneTextTexture {
   readonly canvas = document.createElement("canvas");
   readonly texture = new CanvasTexture(this.canvas);
+  warning?: string;
   private context: CanvasRenderingContext2D;
   private script?: SceneTextScript;
   private previous?: string;
@@ -25,15 +27,22 @@ export class SceneTextTexture {
   static async create(layer: SceneLayer, family: string, maxTextureSize: number) {
     const result = new SceneTextTexture(layer, family, maxTextureSize);
     try {
-      if (layer.text!.script) result.script = await SceneTextScript.create(layer.text!);
+      if (layer.text!.script) {
+        try { result.script = await SceneTextScript.create(layer.text!); }
+        catch { result.disableScript(); }
+      }
       result.update(0);
       return result;
     } catch (e) { result.dispose(); throw e; }
   }
   update(time: number, now = Date.now(), budgetMs = 8) {
     if (this.previous !== undefined && (!this.script || time < this.nextUpdate)) return;
+    if (this.script && (!Number.isFinite(budgetMs) || budgetMs < MIN_TEXT_SCRIPT_BUDGET_MS)) return;
     this.nextUpdate = time + .05;
-    if (this.script) this.value = this.script.update(this.value, now, budgetMs);
+    if (this.script) {
+      try { this.value = this.script.update(this.value, now, budgetMs); }
+      catch { this.disableScript(); }
+    }
     if (this.previous === this.value) return;
     this.previous = this.value;
     const c = this.context, text = this.layer.text!, [w, h] = this.layer.size;
@@ -49,6 +58,10 @@ export class SceneTextTexture {
     const y = (text.vertical === "top" ? text.padding : text.vertical === "bottom" ? h - text.padding - total : (h - total) / 2) + ascent;
     lines.forEach((line, i) => c.fillText(line, x, y + i * lineHeight));
     this.texture.needsUpdate = true;
+  }
+  private disableScript() {
+    this.script?.dispose(); this.script = undefined;
+    this.warning = `SceneScript text disabled after an unsupported API, invalid value, or execution limit: layer ${this.layer.id}; last valid text retained`;
   }
   dispose() { this.script?.dispose(); this.texture.dispose(); this.canvas.width = this.canvas.height = 1; }
 }

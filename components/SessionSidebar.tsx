@@ -1231,7 +1231,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
         <button
           onClick={handleNewSession}
           disabled={!selectedCwd}
-          className="sidebar-new-session"
+          className="sidebar-new-session wallpaper-inset"
           title={selectedCwd ? t("sessionSidebar.newSessionIn", { cwd: selectedCwd }) : t("sessionSidebar.selectProjectFirst")}
           style={{
             width: "100%",
@@ -1474,7 +1474,6 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
     </div>
   );
 });
-
 
 
 

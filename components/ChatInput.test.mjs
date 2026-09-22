@@ -11,6 +11,34 @@ const jiti = createJiti(import.meta.url, {
 const { ChatInput, ModelErrorBanner, filterModelOptions } = await jiti.import("./ChatInput.tsx");
 const { setDraft, clearDraft } = await jiti.import("@/lib/draft-store");
 
+test("send, queue and stop all opt into inset glass styling", () => {
+  const draftKey = "chat-input-glass-action-test";
+  for (const [isStreaming, value] of [[false, ""], [false, "Send"], [true, ""], [true, "Queue"]]) {
+    setDraft(draftKey, { value, images: [], files: [] });
+    try {
+      const html = renderToStaticMarkup(React.createElement(ChatInput, {
+        onSend() {}, onAbort() {}, onFollowUp() {}, isStreaming, draftKey,
+      }));
+      assert.match(html, /class="composer-primary-action wallpaper-inset"/);
+    } finally { clearDraft(draftKey); }
+  }
+});
+
+test("composer menu triggers opt into inset glass without changing their roles", () => {
+  const html = renderToStaticMarkup(React.createElement(ChatInput, {
+    onSend() {}, onAbort() {}, onModelChange() {}, onThinkingLevelChange() {}, onCompact() {},
+    isStreaming: false, model: { provider: "test", modelId: "model" },
+    modelList: [{ provider: "test", id: "model", name: "Test model" }],
+    thinkingLevel: "high",
+  }));
+  const triggers = html.match(/<button[^>]*aria-haspopup="(?:menu|dialog)"[^>]*>/g);
+  assert.equal(triggers.length, 4);
+  for (const trigger of triggers) {
+    assert.match(trigger, /class="wallpaper-inset"/);
+    assert.match(trigger, /aria-expanded="false"/);
+  }
+});
+
 test("shows Queue instead of Stop for typed text during a run", () => {
   const draftKey = "chat-input-queue-action-test";
   setDraft(draftKey, { value: "Continue after the current run", images: [], files: [] });
@@ -280,6 +308,7 @@ test("renders live status bar attached to the composer top edge when statusText 
   );
 
   assert.match(html, /role="status"/);
+  assert.match(html, /class="composer-status-bar wallpaper-surface"/);
   assert.match(html, /Waiting for model\.\.\./);
   assert.match(html, /live-status-dot/);
 });
@@ -295,6 +324,7 @@ test("omits live status bar when statusText is absent or null", () => {
   );
 
   assert.doesNotMatch(html, /role="status"/);
+  assert.doesNotMatch(html, /composer-status-bar/);
   assert.doesNotMatch(html, /Waiting for model/);
 });
 
@@ -315,4 +345,5 @@ test("renders both queued prompts and attached status bar together", () => {
   assert.match(html, /Next prompt to run/);
   assert.match(html, /Waiting for model\.\.\./);
   assert.match(html, /live-status-dot/);
+  assert.match(html, /class="composer-status-bar wallpaper-surface"/);
 });

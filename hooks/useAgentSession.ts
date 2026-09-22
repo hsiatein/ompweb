@@ -12,6 +12,7 @@ import type {
   ToolResultMessage,
 } from "@/lib/types";
 import { normalizeToolCalls } from "@/lib/normalize";
+import { encodeFilePathForApi, getFileName, resolveWorkspaceFilePath } from "@/lib/file-paths";
 import { hasVisibleAssistantContent } from "@/lib/assistant-response";
 import type { ThinkingModelMeta } from "@/lib/thinking-levels";
 import { sendAgentCommand, setSessionAdvisorSpawn } from "@/lib/agent-client";
@@ -1257,22 +1258,32 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         break;
       }
       case "open_file": {
-        const path = str(args.path) ?? "";
-        if (path && onOpenFile) {
-          try {
-            const name = path.split(/[\\/]/).pop() || path;
-            onOpenFile(path, name, sid);
-          } catch {
-            // ignore navigation failures
-          }
+        const path = resolveWorkspaceFilePath(str(args.path) ?? "", session?.cwd ?? newSessionCwd);
+        if (!path || !onOpenFile) {
+          await respondHostTool(sid, id, !path ? "Invalid file path or workspace unavailable" : "File viewer is unavailable", true);
+          break;
         }
-        await respondHostTool(sid, id, path ? `Opened ${path}` : "No path provided", !path);
+        try {
+          const query = new URLSearchParams({ type: "meta", sessionId: sid });
+          const response = await fetch(`/api/files/${encodeFilePathForApi(path)}?${query}`, {
+            signal: AbortSignal.timeout(10_000),
+          });
+          if (!response.ok) {
+            const detail = await response.json().catch(() => null);
+            throw new Error(isRecord(detail) && typeof detail.error === "string" ? detail.error : `File check failed (${response.status})`);
+          }
+          if (sessionIdRef.current !== sid || !hookAliveRef.current) throw new Error("Session changed before opening the file");
+          onOpenFile(path, getFileName(path), sid);
+          await respondHostTool(sid, id, `Opened ${path}`);
+        } catch (error) {
+          await respondHostTool(sid, id, `Could not open ${path}: ${error instanceof Error ? error.message : String(error)}`, true);
+        }
         break;
       }
       default:
         await respondHostTool(sid, id, `Host tool \"${toolName}\" is not available in omp-web`, true);
     }
-  }, [onOpenFile, respondHostTool]);
+  }, [onOpenFile, respondHostTool, session?.cwd, newSessionCwd]);
 
   /** Answer a host_uri_request (agent read/write of a registered scheme). */
   const respondHostUri = useCallback(async (sid: string, id: string, frame: { content?: string; contentType?: "text/markdown" | "application/json" | "text/plain"; isError?: boolean; error?: string }) => {

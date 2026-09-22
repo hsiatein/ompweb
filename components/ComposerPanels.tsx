@@ -161,7 +161,7 @@ function SubagentsPanel({ subagents, onSelectSubagent, defaultExpanded = false }
   return (
     <section
       aria-label={t("chatWindow.subagentsPanel")}
-      className="overflow-hidden border border-border bg-bg-subtle"
+      className="composer-subagents-panel wallpaper-surface overflow-hidden border border-border bg-bg-subtle"
       style={{ borderRadius: "var(--radius-card)" }}
     >
       <button
@@ -204,7 +204,7 @@ function SubagentsPanel({ subagents, onSelectSubagent, defaultExpanded = false }
               <button
                 key={subagent.id}
                 type="button"
-                className="ui-focus-ring"
+                className="ui-focus-ring wallpaper-inset"
                 onClick={() => onSelectSubagent(subagent)}
                 aria-label={label}
                 title={`${label}${subagent.detached ? " (async)" : ""}`}
