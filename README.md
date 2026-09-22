@@ -13,10 +13,77 @@ Community: [Join the OMPWEB Discord](https://discord.gg/evqgGzRfM5)
 
 A clean, modern web UI for the [oh-my-pi (omp)](https://github.com/can1357/oh-my-pi) coding agent. It reads your local omp sessions and gives you a browser workspace to chat with the agent, browse projects, manage settings, and preview files.
 
-![ompweb — live session demo](docs/demo.gif)
+## This Fork
+
+[hsiatein/ompweb](https://github.com/hsiatein/ompweb) builds on
+[kahme247/ompweb](https://github.com/kahme247/ompweb) with local wallpapers,
+glass surfaces, wallpaper-derived colors and animated companions. The npm
+badges above refer to the **upstream package**, not a separate release of this
+fork. Use the source installation below for these additions.
+
+| Addition | What it does |
+| --- | --- |
+| Local wallpapers | Original-file images and videos, local folders and Steam library discovery; playback, volume, brightness and draggable crop positioning. |
+| Browser-native scenes | Renders supported Wallpaper Engine scene resources on the browser GPU with Three.js/WebGL. No desktop capture or frame streaming. Includes supported effects, particles, parallax, animation, audio and sandboxed SceneScript. |
+| Glass workspace | Default per-message/per-control glass, clear mode and full frosted mode, with adjustable opacity. Covers chat, tables, code, tool/thinking/status blocks, sidebars, usage meters and composer controls. |
+| Wallpaper color system | Material Color Utilities derives coordinated accents, selections, borders and progress colors. Ordinary text uses one unified color: fixed, automatic black/white, or Material-derived; semantic code/diff/status colors remain distinct. |
+| Animated pets | Import compatible Codex v1/v2 raster spritesheets, preview animations, follow the pointer and reflect the active chat's activity. No extra model calls. |
+| Charm Hyper balance | Shows reported remaining credits. If the API omits the total, the UI clearly marks a **250-credit reference estimate**, not a verified subscription limit. |
+| Workspace refinements | Responsive topbar, glass-aware popovers and file previews, and corrected `xd://open_file` result/path handling. |
+
+**Compatibility:** scene support is partial, not a complete or pixel-identical
+Wallpaper Engine replacement. Some effects, 3D formats and scripting APIs are
+unsupported; GPU limits and browser media policies still apply. Wallpaper Engine,
+Steam artwork, Codex assets, credentials and ASR model weights are **not bundled**.
+
+Details: [wallpapers and renderer limitations](docs/local-wallpapers.md),
+[pet format and controls](docs/PETS.md), [deployment and privacy](docs/CUSTOMIZATIONS.md).
+
+### Showcase
+
+Actual browser captures of this fork using **fictional conversations, a demo
+account and original procedural artwork**. These show image-wallpaper mode,
+not a claim of full scene compatibility.
+
+![Glass chat, wallpaper colors and a demo credit balance](docs/showcase/workspace.png)
 
 <details>
-<summary>Screenshots (light / dark)</summary>
+<summary>Wallpaper colors, text modes and crop settings</summary>
+
+![Wallpaper settings with Material colors and crop positioning](docs/showcase/wallpaper-settings.png)
+
+</details>
+
+<details>
+<summary>Mobile workspace</summary>
+
+<img src="docs/showcase/mobile.png" alt="Mobile glass chat with responsive controls" width="360" />
+
+</details>
+
+[Capture method and asset provenance](docs/showcase/README.md).
+
+### Latest Upstream Sync
+
+Merged through [`a44946d`](https://github.com/kahme247/ompweb/commit/a44946d)
+on 2026-09-22: voice recording deck (timer, waveform, pause, preview, retry and
+send modes), browser-native reply read-aloud, settings attention indicators and
+systemd test isolation. These are upstream features, retained alongside the
+fork's customizations; recording controls keep the glass treatment.
+
+![Upstream voice recording deck integrated with the glass composer](docs/showcase/dictation.png)
+
+Dictation uses the existing OpenAI-compatible transcription endpoint. A local
+Qwen3-ASR server can be connected if it exposes that protocol; configure
+`OMP_WEB_STT_ENDPOINT`, `OMP_WEB_STT_MODEL` and, when required, `OMP_WEB_STT_KEY`
+on the server. The ASR service must run separately. Microphone capture requires
+localhost or HTTPS and browser permission. Read-aloud uses browser/OS voices,
+not the ASR model; voice availability varies by device.
+
+<details>
+<summary>Original upstream demo and screenshots (light / dark)</summary>
+
+![ompweb upstream live session demo](docs/demo.gif)
 
 ![ompweb — light theme](docs/screenshot-light.png)
 
@@ -30,6 +97,28 @@ A clean, modern web UI for the [oh-my-pi (omp)](https://github.com/can1357/oh-my
 - Node.js `>= 22.19.0`
 
 ## Quick Start
+
+**Install this fork from source:**
+
+```bash
+git clone https://github.com/hsiatein/ompweb.git
+cd ompweb
+npm ci
+npm run build
+node bin/omp-web.js --no-open
+```
+
+OMP must be installed separately on the same server (or in the same container)
+and its agent directory persisted separately from this checkout. Keep private
+settings in environment variables or an ignored `.env.local`; do not commit them.
+Use a separate checkout for builds while an existing instance is serving tasks.
+
+Open [http://127.0.0.1:30177](http://127.0.0.1:30177). For the CLI examples below,
+replace `ompweb` with `node bin/omp-web.js` when running from source. The explicit
+`npx @kahme247/ompweb` service recipes install **upstream**, not this fork.
+
+<details>
+<summary>Install upstream instead (without the fork additions)</summary>
 
 **Run directly without installing:**
 
@@ -50,6 +139,8 @@ ompweb
 ```
 
 Open [http://127.0.0.1:30177](http://127.0.0.1:30177) in your browser.
+
+</details>
 
 ### CLI Options
 
@@ -227,7 +318,7 @@ host (KDE Plasma, and most Wayland/X11 desktops).
 ## Development
 
 ```bash
-git clone https://github.com/kahme247/ompweb.git
+git clone https://github.com/hsiatein/ompweb.git
 cd ompweb
 npm install
 npm run dev

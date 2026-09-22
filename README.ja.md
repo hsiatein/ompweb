@@ -9,6 +9,11 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md)
 
+> このフォークには壁紙、ガラス UI、自動配色、ペットなどの拡張があります。
+> 機能一覧・新しいスクリーンショット・ソースからの導入方法は
+> [English README](./README.md#this-fork) または [简体中文](./README.zh-CN.md#本分支增强) を参照してください。
+> 以下の npm 導入手順は拡張を含まない上流パッケージ用です。
+
 コミュニティ：[OMPWEB Discord に参加](https://discord.gg/evqgGzRfM5)
 
 [oh-my-pi (omp)](https://github.com/can1357/oh-my-pi) コーディングエージェント向けのモダンな Web UI です。ローカルの omp セッションを読み込み、ブラウザから対話、プロジェクト閲覧、設定管理、ファイルプレビューを行えるワークスペースを提供します。

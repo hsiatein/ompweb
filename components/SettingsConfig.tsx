@@ -13,6 +13,7 @@ import { copyText } from "@/lib/clipboard";
 import type { AppUpdateInfo } from "./AppUpdateDialog";
 import { useFontSize, type FontSizePreference } from "@/hooks/useFontSize";
 import { useUiScale, type UiScalePreference } from "@/hooks/useUiScale";
+import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 const SettingsTabLoading = () => {
   const { t } = useI18n();
   return <div role="status" style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "var(--text-muted)", fontSize: 12 }}>{t("settingsConfig.loadingSettings")}</div>;
@@ -133,6 +134,8 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "completion-sound", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.completionSound", descKey: "settingsConfig.completionSoundDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Completion sound", fallbackDesc: "Play a tone when the agent completes a run.", scope: "UI" },
   { id: "keep-tool-calls-collapsed", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.keepToolCallsCollapsed", descKey: "settingsConfig.keepToolCallsCollapsedDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Keep tool calls collapsed", fallbackDesc: "Show only compact headers while tools execute.", scope: "UI" },
   { id: "scope-native-select-all", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.scopeNativeSelectAll", descKey: "settingsConfig.scopeNativeSelectAllDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Scope native Select All (experimental)", fallbackDesc: "Limit whole-page selections from browser or touch menus to the active message, chat, or file. May also narrow deliberate whole-page selections. Turn off if selection handles or menus misbehave. Keyboard shortcuts are unaffected.", scope: "UI" },
+  { id: "tts-autoplay", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.ttsAutoplay", descKey: "settingsConfig.ttsAutoplayDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Auto-read assistant responses", fallbackDesc: "Automatically read aloud new assistant replies when completed.", scope: "UI" },
+  { id: "tts-voice", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.ttsVoice", descKey: "settingsConfig.ttsVoiceDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Speech Voice", fallbackDesc: "Select the browser voice for text-to-speech reading.", scope: "UI" },
   { id: "provider-usage", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.providerUsage", descKey: "settingsConfig.providerUsageDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Provider usage limits", fallbackDesc: "Show provider usage in the sidebar, above Settings.", scope: "UI" },
   { id: "chat-font-size", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.chatFontSize", descKey: "settingsConfig.chatFontSizeDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Chat Font Size", fallbackDesc: "Adjust text size for conversation messages, code blocks, and markdown output.", scope: "UI" },
   { id: "ui-scale", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.uiScale", descKey: "settingsConfig.uiScaleDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Interface Scale", fallbackDesc: "Adjust overall UI zoom and display density across sidebars, dialogs, buttons, and toolbars.", scope: "UI" },
@@ -358,7 +361,7 @@ function NativeSetting({ label, description, scope, searchId, children }: { labe
   );
 }
 
-export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCallsDefaultCollapsedChange, providerUsageVisible, onProviderUsageVisibleChange, scopeNativeSelectAll, onScopeNativeSelectAllChange, cwd, sessionId, onModelsSaved, onPluginsReloaded, appUpdate, onRefreshAppUpdate, onOmpUpdateAvailabilityChange, onRequestAppUpdate, onSelectTab, onClose }: {
+export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCallsDefaultCollapsedChange, providerUsageVisible, onProviderUsageVisibleChange, scopeNativeSelectAll, onScopeNativeSelectAllChange, cwd, sessionId, onModelsSaved, onPluginsReloaded, appUpdate, ompUpdateAvailable, onRefreshAppUpdate, onOmpUpdateAvailabilityChange, onRequestAppUpdate, onSelectTab, onClose }: {
   activeTab: SettingsTab;
   toolCallsDefaultCollapsed: boolean;
   onToolCallsDefaultCollapsedChange: (collapsed: boolean) => void;
@@ -371,6 +374,7 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   onModelsSaved: () => void;
   onPluginsReloaded: () => void;
   appUpdate: AppUpdateInfo | null;
+  ompUpdateAvailable?: boolean;
   onRefreshAppUpdate: (force?: boolean) => Promise<AppUpdateInfo | null>;
   onOmpUpdateAvailabilityChange: (available: boolean) => void;
   onRequestAppUpdate: () => void;
@@ -382,6 +386,14 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   const workspaceReady = cwd !== null;
   const { fontSize, setFontSize } = useFontSize();
   const { uiScale, setUiScale } = useUiScale();
+  const {
+    isSupported: ttsSupported,
+    autoPlayEnabled: ttsAutoPlay,
+    setAutoPlay: setTtsAutoPlay,
+    voices: ttsVoices,
+    selectedVoiceURI: ttsVoiceURI,
+    setSelectedVoiceURI: setTtsVoiceURI,
+  } = useSpeechSynthesis();
   const [searchQuery, setSearchQuery] = useState("");
   const [highlightId, setHighlightId] = useState<string | null>(null);
   const [submitBehavior, setSubmitBehavior] = useState<SubmitDuringRunBehavior>(() => getSubmitDuringRunBehavior());
@@ -405,6 +417,18 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
   const [windowsService, setWindowsService] = useState<WindowsServiceStatus | null>(null);
   const [loadingWindowsService, setLoadingWindowsService] = useState(false);
   const [windowsServiceActionPending, setWindowsServiceActionPending] = useState(false);
+
+  const ompUpdateIsAvailable = Boolean(ompUpdateAvailable || update?.updateAvailable);
+  const appUpdateIsAvailable = Boolean(appUpdate?.updateAvailable);
+  const systemNeedsAttention = appUpdateIsAvailable || ompUpdateIsAvailable;
+
+  const attentionTabs = useMemo<Partial<Record<SettingsTab, boolean | string>>>(() => {
+    const tabs: Partial<Record<SettingsTab, boolean | string>> = {};
+    if (systemNeedsAttention) {
+      tabs.system = t("settingsTabs.updateAvailable");
+    }
+    return tabs;
+  }, [systemNeedsAttention, t]);
 
   const fetchWindowsServiceStatus = useCallback(async () => {
     try {
@@ -745,7 +769,7 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
           <SearchResultsList results={searchResults} query={searchQuery.trim()} onSelect={openSearchResult} />
         ) : (
           <SettingsHighlightContext.Provider value={highlightId}>
-            <SettingsTabs active={currentTab} onSelect={handleSelectTab} workspaceReady={workspaceReady} layout={isMobile ? "horizontal" : "vertical"} />
+            <SettingsTabs active={currentTab} onSelect={handleSelectTab} workspaceReady={workspaceReady} layout={isMobile ? "horizontal" : "vertical"} attentionTabs={attentionTabs} />
 
             <div className="settings-content" style={contentStyle}>
             {nativeSettingsError && (
@@ -779,6 +803,38 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                         window.dispatchEvent(new CustomEvent("omp-sound-pref-change", { detail: next }));
                       }}
                     />
+                  </NativeSetting>
+                  <NativeSetting
+                    searchId="tts-autoplay"
+                    label={t("settingsConfig.ttsAutoplay") || "Auto-read assistant responses"}
+                    description={ttsSupported ? (t("settingsConfig.ttsAutoplayDesc") || "Automatically read aloud new assistant replies when completed.") : `${t("settingsConfig.ttsAutoplayDesc") || "Automatically read aloud new assistant replies when completed."} (${t("settingsConfig.ttsNotSupported") || "Not supported in this browser"})`}
+                    scope="UI"
+                  >
+                    <ToggleSwitch
+                      checked={ttsSupported ? ttsAutoPlay : false}
+                      disabled={!ttsSupported}
+                      onChange={setTtsAutoPlay}
+                    />
+                  </NativeSetting>
+                  <NativeSetting
+                    searchId="tts-voice"
+                    label={t("settingsConfig.ttsVoice") || "Speech Voice"}
+                    description={ttsSupported ? (t("settingsConfig.ttsVoiceDesc") || "Select the browser voice for text-to-speech reading.") : `${t("settingsConfig.ttsVoiceDesc") || "Select the browser voice for text-to-speech reading."} (${t("settingsConfig.ttsNotSupported") || "Not supported in this browser"})`}
+                    scope="UI"
+                  >
+                    <select
+                      style={nativeSelectStyle}
+                      value={ttsVoiceURI || ""}
+                      disabled={!ttsSupported || ttsVoices.length === 0}
+                      onChange={(e) => setTtsVoiceURI(e.target.value || null)}
+                    >
+                      <option value="">{t("settingsConfig.defaultVoice") || "Default system voice"}</option>
+                      {ttsVoices.map((v) => (
+                        <option key={v.voiceURI} value={v.voiceURI}>
+                          {v.name} ({v.lang})
+                        </option>
+                      ))}
+                    </select>
                   </NativeSetting>
                   <NativeSetting searchId="provider-usage" label={t("settingsConfig.providerUsage")} description={t("settingsConfig.providerUsageDesc")} scope="UI">
                     <ToggleSwitch checked={providerUsageVisible} onChange={onProviderUsageVisibleChange} />
@@ -1179,11 +1235,21 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                 </div>
 
                 {/* ompweb app update card */}
-                <section style={{ padding: 14, border: "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
+                <section style={{ padding: 14, border: appUpdateIsAvailable ? "1px solid color-mix(in srgb, var(--accent) 45%, var(--border))" : "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{t("settingsConfig.appLabel")}</div>
-                      <div style={{ marginTop: 4, color: appUpdate?.updateAvailable ? "var(--accent)" : "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{t("settingsConfig.appLabel")}</span>
+                        {appUpdateIsAvailable && (
+                          <span
+                            role="status"
+                            aria-label={t("settingsTabs.updateAvailable")}
+                            title={t("settingsTabs.updateAvailable")}
+                            style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }}
+                          />
+                        )}
+                      </div>
+                      <div style={{ marginTop: 4, color: appUpdateIsAvailable ? "var(--accent)" : "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
                         {checkingAppUpdate ? t("settingsConfig.checkingUpdates") : appUpdate?.updateAvailable ? t("appShell.updateVersion", { current: appUpdate.currentVersion ?? "?", available: appUpdate.availableVersion ?? "?" }) : appUpdate?.currentVersion ? t("settingsConfig.upToDate", { version: appUpdate.currentVersion }) : t("settingsConfig.versionUnavailable")}
                       </div>
                     </div>
@@ -1229,12 +1295,22 @@ export function SettingsConfig({ activeTab, toolCallsDefaultCollapsed, onToolCal
                 </section>
 
                 {/* OMP runtime update card */}
-                <section style={{ padding: 14, border: "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
+                <section style={{ padding: 14, border: ompUpdateIsAvailable ? "1px solid color-mix(in srgb, var(--accent) 45%, var(--border))" : "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 600 }}>{t("settingsConfig.ompLabel")}</div>
-                      <div style={{ marginTop: 4, color: update?.updateAvailable ? "var(--accent)" : "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                        {checking ? t("settingsConfig.checkingUpdates") : update?.updateAvailable ? t("appShell.updateVersion", { current: update.currentVersion ?? "?", available: update.availableVersion ?? "?" }) : update?.currentVersion ? t("settingsConfig.upToDate", { version: update.currentVersion }) : t("settingsConfig.versionUnavailable")}
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 13, fontWeight: 600 }}>{t("settingsConfig.ompLabel")}</span>
+                        {ompUpdateIsAvailable && (
+                          <span
+                            role="status"
+                            aria-label={t("settingsTabs.updateAvailable")}
+                            title={t("settingsTabs.updateAvailable")}
+                            style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }}
+                          />
+                        )}
+                      </div>
+                      <div style={{ marginTop: 4, color: ompUpdateIsAvailable ? "var(--accent)" : "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                        {checking || (!hasCheckedUpdates && !update) ? t("settingsConfig.checkingUpdates") : update?.updateAvailable ? t("appShell.updateVersion", { current: update.currentVersion ?? "?", available: update.availableVersion ?? "?" }) : update?.currentVersion ? t("settingsConfig.upToDate", { version: update.currentVersion }) : t("settingsConfig.versionUnavailable")}
                       </div>
                     </div>
                     <button type="button" onClick={() => void checkForUpdate(true)} disabled={checking} aria-label={t("settingsConfig.checkOmpUpdates")} style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "transparent", color: "var(--text)", cursor: checking ? "wait" : "pointer", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>

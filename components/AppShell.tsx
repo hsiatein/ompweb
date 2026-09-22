@@ -1702,6 +1702,7 @@ export function AppShell() {
             onModelsSaved={() => setModelsRefreshKey((k) => k + 1)}
             onPluginsReloaded={() => setSessionKey((k) => k + 1)}
             appUpdate={appUpdate}
+            ompUpdateAvailable={ompUpdateAvailable}
             onRefreshAppUpdate={refreshAppUpdate}
             onOmpUpdateAvailabilityChange={setOmpUpdateAvailable}
             onRequestAppUpdate={requestAppUpdateFromSettings}

@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useRef, useState, useCallback, useEffect, useLayoutEffect, useImperativeHandle, forwardRef, memo, KeyboardEvent } from "react";
-import { ChevronDown, ListChecks, Loader2, Mic, Paperclip, Plus, Shrink, Sparkles, Wrench, Zap } from "lucide-react";
+import { ChevronDown, ListChecks, Loader2, Mic, Paperclip, Plus, Shrink, Sparkles, Wrench, X, Zap } from "lucide-react";
 import { getSubmitDuringRunBehavior } from "@/lib/composer-prefs";
 import type { BuiltinSlashCommandResult, CompactResultInfo, QueuedMessages, SlashCommandInfo } from "@/hooks/useAgentSession";
 import type { ActiveGoal, ActivePlan } from "@/lib/web-mode-state";
@@ -11,6 +11,7 @@ import { useDictation } from "@/hooks/useDictation";
 import type { GenerationSpeedInfo, SessionStatsInfo } from "@/lib/pi-types";
 import { formatCompactNumber, formatPercent } from "@/lib/format";
 import { ContextDetailPanel } from "./ComposerPanels";
+import { RecordingDeck } from "./RecordingDeck";
 import { clearDraft, getDraft, setDraft } from "@/lib/draft-store";
 import { expandWebSlashCommand } from "@/lib/web-slash-commands";
 import type { AttachedImage, AttachedTextFile } from "./ChatInput-draft-attachments";
@@ -359,22 +360,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     });
   }, []);
 
-  const { isRecording, isTranscribing, toggle: toggleDictation, cancel: cancelDictation, stop: stopDictation } = useDictation({
-    onTranscript: insertTextAtCursor,
-    onError: (err) => {
-      const msg =
-        err === "Microphone not supported in this browser or context"
-          ? t("chatInput.dictationNotSupported")
-          : err === "Microphone access denied"
-          ? t("chatInput.dictationPermissionDenied")
-          : err === "No speech detected"
-          ? t("chatInput.dictationNoSpeech")
-          : err === "Transcription failed"
-          ? t("chatInput.dictationFailed")
-          : err;
-      toast.error(msg);
-    },
-  });
 
   useImperativeHandle(ref, () => ({
     focus() {
@@ -663,28 +648,128 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     return error !== null;
   }, []);
 
-  const handleSend = useCallback(async () => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length && !attachedTextFiles.length) return;
+  const handleSend = useCallback(async (overrideText?: string) => {
+    const raw = overrideText ?? value;
+    const msg = raw.trim();
+    if (!msg && !attachedImagesRef.current.length && !attachedTextFilesRef.current.length) return;
     if (isStreaming) return;
     onAudioUnlock?.();
-    const composedMessage = composeMessageWithTextAttachments(msg, attachedTextFiles);
-    if (!attachedImages.length && !attachedTextFiles.length && msg.startsWith("/") && onBuiltinCommand) {
+    const composedMessage = composeMessageWithTextAttachments(msg, attachedTextFilesRef.current);
+    if (!attachedImagesRef.current.length && !attachedTextFilesRef.current.length && msg.startsWith("/") && onBuiltinCommand) {
       const expansion = expandWebSlashCommand(msg);
-      if (expansion.kind === "expand" && rejectsOversizedPrompt(expansion.prompt, attachedImages)) return;
-      const sentValue = value;
+      if (expansion.kind === "expand" && rejectsOversizedPrompt(expansion.prompt, attachedImagesRef.current)) return;
+      const sentValue = overrideText ?? value;
       const result = await onBuiltinCommand(msg);
       if (result.handled) {
         // The user may have started typing while the command ran; only clear
         // if the composer still holds what was sent.
-        if (!result.error && !result.retainInput && valueRef.current === sentValue) clearInput();
+        if (!result.error && !result.retainInput && (overrideText !== undefined || valueRef.current === sentValue)) clearInput();
         return;
       }
     }
-    if (rejectsOversizedPrompt(composedMessage, attachedImages)) return;
-    onSend(composedMessage, attachedImages.length ? attachedImages : undefined);
+    if (rejectsOversizedPrompt(composedMessage, attachedImagesRef.current)) return;
+    onSend(composedMessage, attachedImagesRef.current.length ? attachedImagesRef.current : undefined);
     clearInput();
-  }, [value, attachedImages, attachedTextFiles, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock, rejectsOversizedPrompt]);
+  }, [value, isStreaming, onBuiltinCommand, onSend, clearInput, onAudioUnlock, rejectsOversizedPrompt]);
+  /** What happens to the composer after the transcript lands: null inserts it
+   *  for editing; "send" dispatches immediately; "steer"/"followup" queue it
+   *  into the running agent. */
+  type DictationAfterMode = "send" | "steer" | "followup";
+  const dictationAfterRef = useRef<DictationAfterMode | null>(null);
+  const {
+    isRecording,
+    isPaused,
+    isReviewing,
+    isTranscribing,
+    isPlayingPreview,
+    previewCurrentTime,
+    previewDuration,
+    transcribeError,
+    captureRef,
+    toggle: toggleDictation,
+    cancel: cancelDictation,
+    stop: stopDictation,
+    togglePause: togglePauseDictation,
+    retry: retryDictation,
+    playPreview: playPreviewDictation,
+    pausePreview: pausePreviewDictation,
+    seekPreview: seekPreviewDictation,
+    confirmTranscribe: confirmTranscribeDictation,
+  } = useDictation({
+    onTranscript: (text) => {
+      const after = dictationAfterRef.current;
+      dictationAfterRef.current = null;
+      const base = valueRef.current;
+      const sep = base.length > 0 && !base.endsWith(" ") ? " " : "";
+      const finalText = base + sep + text;
+      insertTextAtCursor(text);
+      if (after === "send") {
+        void handleSend(finalText);
+      } else if (after === "steer" || after === "followup") {
+        sendQueued(after, finalText);
+      } else {
+        toast.success(t("chatInput.dictationSuccess"));
+      }
+    },
+    onError: (err) => {
+      const msg =
+        err === "Microphone not supported in this browser or context"
+          ? t("chatInput.dictationNotSupported")
+          : err === "Microphone access denied"
+          ? t("chatInput.dictationPermissionDenied")
+          : err === "No speech detected"
+          ? t("chatInput.dictationNoSpeech")
+          : err === "Transcription timed out"
+          ? t("chatInput.dictationTimedOut")
+          : err === "Transcription failed"
+          ? t("chatInput.dictationFailed")
+          : err;
+      toast.error(msg);
+    },
+  });
+  const stopAndInsertDictation = useCallback(() => {
+    dictationAfterRef.current = null;
+    stopDictation();
+  }, [stopDictation]);
+  const stopAndSendDictation = useCallback(() => {
+    dictationAfterRef.current = "send";
+    stopDictation({ immediateSend: true });
+  }, [stopDictation]);
+  const stopAndQueueDictation = useCallback((mode: "steer" | "followup") => {
+    dictationAfterRef.current = mode;
+    stopDictation({ immediateSend: true });
+  }, [stopDictation]);
+  const cancelDictationAndReset = useCallback(() => {
+    dictationAfterRef.current = null;
+    cancelDictation();
+  }, [cancelDictation]);
+  const startFreshDictation = useCallback(() => {
+    dictationAfterRef.current = null;
+    toggleDictation();
+  }, [toggleDictation]);
+  // While the recording deck replaces the textarea there is no focused input,
+  // so Escape/Enter are handled at window level: Escape cancels/discard, Enter
+  // retries after an error or converts the recording to text.
+  useEffect(() => {
+    if (!(isRecording || isPaused || isReviewing || isTranscribing || transcribeError)) return;
+    const onKeyDown = (e: globalThis.KeyboardEvent) => {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        cancelDictationAndReset();
+      } else if (e.key === "Enter" && !e.shiftKey && !isTranscribing) {
+        // Let focused deck/toolbar controls keep their own activation;
+        // only hijack Enter from the non-interactive page context.
+        const target = e.target as HTMLElement | null;
+        if (target && target.closest("button, input, textarea, select, a, [role='button']")) return;
+        e.preventDefault();
+        if (transcribeError) retryDictation();
+        else if (isReviewing) confirmTranscribeDictation();
+        else stopAndInsertDictation();
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [isRecording, isPaused, isReviewing, isTranscribing, transcribeError, cancelDictationAndReset, retryDictation, confirmTranscribeDictation, stopAndInsertDictation]);
 
   const slashQuery = value.startsWith("/") && !/\s/.test(value.slice(1))
     ? value.slice(1).toLowerCase()
@@ -964,10 +1049,11 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     });
   }, []);
 
-  const sendQueued = useCallback((mode: "steer" | "followup") => {
-    const msg = value.trim();
-    if (!msg && !attachedImages.length && !attachedTextFiles.length) return;
-    if (attachedImages.length || attachedTextFiles.length) return;
+  const sendQueued = useCallback((mode: "steer" | "followup", overrideText?: string) => {
+    const raw = overrideText ?? value;
+    const msg = raw.trim();
+    if (!msg && !attachedImagesRef.current.length && !attachedTextFilesRef.current.length) return;
+    if (attachedImagesRef.current.length || attachedTextFilesRef.current.length) return;
     onAudioUnlock?.();
     const streamingBehavior = mode === "steer" ? "steer" : "followUp";
     if (msg.startsWith("/") && onPromptWithStreamingBehavior) {
@@ -984,8 +1070,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       // own ACP handlers can run them.
       const expansion = expandWebSlashCommand(msg);
       if (expansion.kind === "expand") {
-        if (rejectsOversizedPrompt(expansion.prompt, attachedImages)) return;
-        onPromptWithStreamingBehavior(expansion.prompt, streamingBehavior, attachedImages.length ? attachedImages : undefined);
+        if (rejectsOversizedPrompt(expansion.prompt, attachedImagesRef.current)) return;
+        onPromptWithStreamingBehavior(expansion.prompt, streamingBehavior, attachedImagesRef.current.length ? attachedImagesRef.current : undefined);
         clearInput();
         return;
       }
@@ -996,24 +1082,27 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }));
         return;
       }
-      if (rejectsOversizedPrompt(msg, attachedImages)) return;
-      onPromptWithStreamingBehavior(msg, streamingBehavior, attachedImages.length ? attachedImages : undefined);
+      if (rejectsOversizedPrompt(msg, attachedImagesRef.current)) return;
+      onPromptWithStreamingBehavior(msg, streamingBehavior, attachedImagesRef.current.length ? attachedImagesRef.current : undefined);
       clearInput();
       return;
     }
-    if (rejectsOversizedPrompt(msg, attachedImages)) return;
+    if (rejectsOversizedPrompt(msg, attachedImagesRef.current)) return;
     if (mode === "steer" && onSteer) {
-      onSteer(msg, attachedImages.length ? attachedImages : undefined);
+      onSteer(msg, attachedImagesRef.current.length ? attachedImagesRef.current : undefined);
     } else if (mode === "followup" && onFollowUp) {
-      onFollowUp(msg, attachedImages.length ? attachedImages : undefined);
+      onFollowUp(msg, attachedImagesRef.current.length ? attachedImagesRef.current : undefined);
     }
     clearInput();
-  }, [value, attachedImages, attachedTextFiles, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, t, advisorEnabled, rejectsOversizedPrompt]);
-  // A typed, text-only message during a run is a queued follow-up. Keep Stop
-  // as the action while the composer is empty or contains attachments.
+  }, [value, onPromptWithStreamingBehavior, onSteer, onFollowUp, clearInput, onAudioUnlock, t, advisorEnabled, rejectsOversizedPrompt]);
+  // A typed, text-only message during a run is a queued follow-up — and so is
+  // a dictation in progress: the primary button must take the same state it
+  // would have if the composer already held text. Keep Stop as the action
+  // while the composer is empty and nothing is being recorded.
+  const dictationCapturing = isRecording || isPaused;
   const primaryActionQueuesMessage =
     isStreaming
-    && Boolean(value.trim())
+    && (Boolean(value.trim()) || dictationCapturing)
     && attachedImages.length === 0
     && attachedTextFiles.length === 0
     && Boolean(onFollowUp);
@@ -1130,21 +1219,9 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         if (recentlyComposed) e.preventDefault();
         return;
       }
-      if (isRecording || isTranscribing) {
-        if (e.key === "Escape") {
-          e.preventDefault();
-          cancelDictation();
-          return;
-        }
-        if (isRecording && e.key === "Enter" && !e.shiftKey) {
-          e.preventDefault();
-          stopDictation();
-          return;
-        }
-      }
       if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "m") {
         e.preventDefault();
-        toggleDictation();
+        startFreshDictation();
         return;
       }
 
@@ -1268,7 +1345,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
     },
-    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, onMinimize, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, isRecording, isTranscribing, cancelDictation, stopDictation, toggleDictation]
+    [isMobile, isStreaming, onSteer, onFollowUp, onAbort, onMinimize, slashMenuOpen, slashQuery, filteredSlashCommands, slashActiveIndex, applySlashCommand, sendQueued, handleSend, getNextSlashIndex, atMenuOpen, atQuery, atMatches, atActiveIndex, applyAtCompletion, historyMenuOpen, inputHistory, historyActiveIndex, applyHistoryInput, value, startFreshDictation]
   );
 
   const handleInput = useCallback(() => {
@@ -2242,6 +2319,25 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               transition: "border-color var(--dur-fast) var(--ease-out-warm), background var(--dur-fast) var(--ease-out-warm), box-shadow var(--dur-fast) var(--ease-out-warm)",
             } as React.CSSProperties}
           >
+          {isRecording || isPaused || isReviewing || isTranscribing || transcribeError ? (
+            <RecordingDeck
+              captureRef={captureRef}
+              isPaused={isPaused}
+              isReviewing={isReviewing}
+              isTranscribing={isTranscribing}
+              isPlayingPreview={isPlayingPreview}
+              previewCurrentTime={previewCurrentTime}
+              previewDuration={previewDuration}
+              transcribeError={transcribeError}
+              onPauseResume={togglePauseDictation}
+              onConvert={stopAndInsertDictation}
+              onRetry={retryDictation}
+              onPlayPreview={isPlayingPreview ? pausePreviewDictation : playPreviewDictation}
+              onSeekPreview={seekPreviewDictation}
+              onConfirmTranscribe={confirmTranscribeDictation}
+              onDiscard={cancelDictationAndReset}
+            />
+          ) : (
           <textarea
             ref={textareaRef}
             value={value}
@@ -2283,6 +2379,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               overflow: "auto",
             }}
           />
+          )}
 
           {/* Toolbar: plus menu · model · reasoning · fast · compact · send/queue/stop */}
           <div className="composer-toolbar" style={{
@@ -2790,37 +2887,61 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             )}
 
             {/* Dictation */}
-            <button
-              type="button"
-              onClick={toggleDictation}
-              disabled={isTranscribing}
-              title={isRecording ? t("chatInput.stopDictation") : isTranscribing ? t("chatInput.transcribing") : t("chatInput.startDictation")}
-              aria-label={isRecording ? t("chatInput.stopDictation") : isTranscribing ? t("chatInput.transcribing") : t("chatInput.startDictation")}
-              style={{
-                display: "flex", alignItems: "center", justifyContent: "center",
-                width: 28, height: 28, padding: 0,
-                background: isRecording ? "var(--danger-subtle, rgba(239, 68, 68, 0.15))" : "none",
-                border: isRecording ? "1px solid var(--danger, #ef4444)" : "none",
-                borderRadius: 7,
-                color: isRecording ? "var(--danger, #ef4444)" : isTranscribing ? "var(--accent)" : "var(--text-muted)",
-                cursor: isTranscribing ? "wait" : "pointer",
-                transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
-              }}
-              onMouseEnter={(e) => { if (!isRecording && !isTranscribing) e.currentTarget.style.background = "var(--bg-hover)"; }}
-              onMouseLeave={(e) => { e.currentTarget.style.background = isRecording ? "var(--danger-subtle, rgba(239, 68, 68, 0.15))" : "none"; }}
-            >
-              {isTranscribing ? (
-                <Loader2 size={14} strokeWidth={1.8} className="animate-spin" aria-hidden="true" />
-              ) : (
+            {isRecording || isPaused || isReviewing || isTranscribing || transcribeError ? (
+              <button
+                type="button"
+                onClick={cancelDictationAndReset}
+                title={transcribeError ? t("chatInput.discardDictation") : t("chatInput.cancelDictation")}
+                aria-label={transcribeError ? t("chatInput.discardDictation") : t("chatInput.cancelDictation")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 28, height: 28, padding: 0,
+                  background: "color-mix(in srgb, var(--status-error) 15%, transparent)",
+                  border: "1px solid var(--status-error)",
+                  borderRadius: 7,
+                  color: "var(--status-error)",
+                  cursor: "pointer",
+                  transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
+                }}
+              >
+                <X size={14} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={startFreshDictation}
+                title={t("chatInput.startDictation")}
+                aria-label={t("chatInput.startDictation")}
+                style={{
+                  display: "flex", alignItems: "center", justifyContent: "center",
+                  width: 28, height: 28, padding: 0,
+                  background: "none",
+                  border: "none",
+                  borderRadius: 7,
+                  color: "var(--text-muted)",
+                  cursor: "pointer",
+                  transition: "background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)",
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = "none"; }}
+              >
                 <Mic size={14} strokeWidth={1.8} aria-hidden="true" />
-              )}
-            </button>
+              </button>
+            )}
             {/* Primary action: Send (idle) / Queue (typed while running) / Stop (running) */}
             {primaryActionQueuesMessage ? (
               <button
                 type="button"
                 className="composer-primary-action wallpaper-inset"
-                onClick={() => sendQueued("followup")}
+                onClick={() => {
+                  if (dictationCapturing) {
+                    const behavior = getSubmitDuringRunBehavior();
+                    stopAndQueueDictation(behavior === "steer" && onSteer ? "steer" : "followup");
+                  } else {
+                    sendQueued("followup");
+                  }
+                }}
+                disabled={isTranscribing}
                 title={t("chatInput.queueMessage")}
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
@@ -2864,25 +2985,30 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
               <button
                 type="button"
                 className="composer-primary-action wallpaper-inset"
-                onClick={handleSend}
-                disabled={!value.trim() && !attachedImages.length && !attachedTextFiles.length}
+                onClick={isRecording || isPaused || isReviewing ? stopAndSendDictation : () => void handleSend()}
+                disabled={isTranscribing || !(isRecording || isPaused || isReviewing || value.trim() || attachedImages.length || attachedTextFiles.length)}
+                title={isRecording || isPaused || isReviewing ? t("chatInput.sendDictation") : t("chatInput.send")}
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
-                  background: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--accent-strong)" : "var(--bg-panel)",
+                  background: (isRecording || isPaused || isReviewing || isTranscribing || value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--accent-strong)" : "var(--bg-panel)",
                   border: "none",
                   borderRadius: 8,
-                  color: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--on-accent)" : "var(--text-dim)",
-                  cursor: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "pointer" : "not-allowed",
+                  color: (isRecording || isPaused || isReviewing || isTranscribing || value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--on-accent)" : "var(--text-dim)",
+                  cursor: isTranscribing ? "wait" : (isRecording || isPaused || value.trim() || attachedImages.length || attachedTextFiles.length) ? "pointer" : "not-allowed",
                   fontSize: 12,
                   fontWeight: 600,
-                  boxShadow: (value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--shadow-card)" : "none",
+                  boxShadow: (isRecording || isPaused || isTranscribing || value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--shadow-card)" : "none",
                   transition: "background var(--dur-fast) var(--ease-out-warm), box-shadow var(--dur-fast) var(--ease-out-warm)",
                 }}
               >
-                <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="2" y1="7" x2="11" y2="7" />
-                  <polyline points="7.5 3 12 7 7.5 11" />
-                </svg>
+                {isTranscribing ? (
+                  <Loader2 size={12} strokeWidth={2} className="animate-spin" aria-hidden="true" />
+                ) : (
+                  <svg width="12" height="12" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    <line x1="2" y1="7" x2="11" y2="7" />
+                    <polyline points="7.5 3 12 7 7.5 11" />
+                  </svg>
+                )}
                 {t("chatInput.send")}
               </button>
             )}

@@ -13,10 +13,71 @@
 
 [oh-my-pi (omp)](https://github.com/can1357/oh-my-pi) 编程智能体的现代 Web UI。它读取本地的 omp 会话，在浏览器中提供实时对话、项目会话浏览、配置管理和文件预览等功能。
 
-![ompweb — 演示](docs/demo.gif)
+## 本分支增强
+
+[hsiatein/ompweb](https://github.com/hsiatein/ompweb) 基于
+[kahme247/ompweb](https://github.com/kahme247/ompweb)，增加本地壁纸、毛玻璃界面、
+壁纸配色与桌宠。上方 npm 徽章属于**上游包**，不是本分支的独立发行版；
+要使用下列功能，请按本文的源码方式安装。
+
+| 新增功能 | 具体内容 |
+| --- | --- |
+| 本地壁纸 | 原文件图片、视频播放，支持本地文件夹和 Steam 壁纸库发现；可调播放、音量、亮度及拖动裁剪位置。 |
+| 浏览器原生场景 | 使用 Three.js/WebGL 在浏览器 GPU 上渲染支持的 Wallpaper Engine 场景资源，不截取桌面、不串流画面；已支持部分特效、粒子、视差、动画、音频与沙箱 SceneScript。 |
+| 毛玻璃工作区 | 默认仅消息和控件背后模糊，也可切换全透明、全毛玻璃并调节不透明度；覆盖聊天、表格、代码、工具/思考/状态块、侧边栏、用量与输入区控件。 |
+| 壁纸生成界面配色 | 通过 Material Color Utilities 协调强调色、选中项、边框与进度条；普通文字统一采用固定颜色、自动黑白或 Material 配色，不再逐字变色，代码/差异/状态语义色仍保留。 |
+| 动画桌宠 | 导入兼容 Codex v1/v2 的精灵图，支持动画预览、跟随指针与当前会话活动联动，不额外调用模型。 |
+| Charm Hyper 余额 | 展示接口返回的剩余额度；总量未知时明确标注 **250 点参考估算**，不把它当作已验证的订阅上限。 |
+| 工作区细节 | 自适应顶栏、弹出面板与文件预览的玻璃样式，以及 `xd://open_file` 结果关联和路径解析修复。 |
+
+**兼容性边界：**场景渲染属于部分兼容，不是 Wallpaper Engine 的完整替代，也不保证逐像素一致。
+部分特效、3D 格式和脚本 API 仍不支持，且受 GPU 和浏览器媒体策略限制。
+仓库**不包含** Wallpaper Engine、Steam 壁纸素材、Codex 桌宠素材、凭据或 ASR 模型权重。
+
+详细说明：[壁纸与场景兼容范围](docs/local-wallpapers.md)、[桌宠格式和操作](docs/PETS.md)、
+[部署与隐私](docs/CUSTOMIZATIONS.md)。
+
+### 功能展示
+
+以下为本分支的真实浏览器截图，使用**虚构会话、示例账户和原创程序绘制壁纸**，不包含个人数据。
+图中展示的是图片壁纸模式，不代表场景已经完全兼容。
+
+![毛玻璃聊天、壁纸配色与示例用量](docs/showcase/workspace.png)
 
 <details>
-<summary>截图（浅色 / 深色主题）</summary>
+<summary>壁纸配色、文字模式与裁剪设置</summary>
+
+![Material 配色与壁纸裁剪设置](docs/showcase/wallpaper-settings.png)
+
+</details>
+
+<details>
+<summary>手机界面</summary>
+
+<img src="docs/showcase/mobile.png" alt="手机上的毛玻璃聊天与自适应控件" width="360" />
+
+</details>
+
+[截图生成方式与素材来源](docs/showcase/README.md)。
+
+### 最近同步的上游功能
+
+2026-09-22 已合并至 [`a44946d`](https://github.com/kahme247/ompweb/commit/a44946d)：
+语音录制面板（计时、波形、暂停、试听、重试和发送模式）、浏览器回复朗读、
+设置更新提示，以及 systemd 测试隔离。这些是**上游新增功能**，与本分支定制同时保留；
+录音控件也沿用毛玻璃样式。
+
+![上游录音面板与本分支毛玻璃输入区](docs/showcase/dictation.png)
+
+语音输入使用已有的 OpenAI 兼容转写接口。本地 Qwen3-ASR 服务只要提供该协议即可接入，
+在服务端配置 `OMP_WEB_STT_ENDPOINT`、`OMP_WEB_STT_MODEL`，需要鉴权时再设置 `OMP_WEB_STT_KEY`。
+ASR 服务需要独立部署；浏览器录音要求 localhost 或 HTTPS，并取得麦克风权限。
+回复朗读使用浏览器/操作系统提供的声音，不经过 ASR 模型，可用声音因设备而异。
+
+<details>
+<summary>上游原始演示和截图（浅色 / 深色主题）</summary>
+
+![ompweb 上游演示](docs/demo.gif)
 
 ![ompweb — 浅色主题](docs/screenshot-light.png)
 
@@ -30,6 +91,26 @@
 - Node.js `>= 22.19.0`
 
 ## 快速开始
+
+**从源码安装本分支：**
+
+```bash
+git clone https://github.com/hsiatein/ompweb.git
+cd ompweb
+npm ci
+npm run build
+node bin/omp-web.js --no-open
+```
+
+服务器或容器内仍需单独安装 OMP，并将其 agent 数据目录与源码分开持久化。
+私有配置使用环境变量或已忽略的 `.env.local`，不要提交到 Git。
+已有实例运行任务时，请在另一个源码目录构建，不要覆盖正在使用的 `.next`。
+
+打开 [http://127.0.0.1:30177](http://127.0.0.1:30177)。源码运行时，
+下方命令中的 `ompweb` 替换为 `node bin/omp-web.js`。
+
+<details>
+<summary>改为安装上游版本（不含本分支增强）</summary>
 
 **免安装直接运行：**
 
@@ -45,6 +126,8 @@ ompweb
 ```
 
 在浏览器中打开 [http://127.0.0.1:30177](http://127.0.0.1:30177)。
+
+</details>
 
 ### CLI 选项
 
@@ -85,7 +168,7 @@ ompweb --no-open                           # 不自动打开浏览器
 ## 本地开发
 
 ```bash
-git clone https://github.com/kahme247/ompweb.git
+git clone https://github.com/hsiatein/ompweb.git
 cd ompweb
 npm install
 npm run dev
@@ -105,5 +188,6 @@ npm test            # 运行测试套件
 
 ## 致谢与许可证
 
+- 本分支基于 [kahme247/ompweb](https://github.com/kahme247/ompweb)，保留并同步其上游工作。
 - 分叉自 [agegr/pi-web](https://github.com/agegr/pi-web)（MIT），针对 [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) 进行适配。
 - 采用 [MIT 许可证](./LICENSE) 开源。

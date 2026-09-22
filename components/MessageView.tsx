@@ -1,9 +1,10 @@
 "use client";
 
 import { memo, useState, useId, useRef, useEffect, useMemo, useCallback, type ComponentProps } from "react";
-import { Copy, Check, GitFork, CornerUpLeft, ChevronRight, ChevronDown, Brain, EyeOff, CircleAlert, CircleSlash, LoaderCircle, FileText, Search, FileEdit, Terminal, CheckSquare, Bot, Code2, Globe, MessagesSquare, Wrench } from "lucide-react";
+import { Copy, Check, GitFork, CornerUpLeft, ChevronRight, ChevronDown, Brain, EyeOff, CircleAlert, CircleSlash, LoaderCircle, FileText, Search, FileEdit, Terminal, CheckSquare, Bot, Code2, Globe, MessagesSquare, Wrench, Volume2, Square } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { MessageCopyActions } from "./MessageCopyActions";
+import { useSpeechContext } from "@/hooks/useSpeechSynthesis";
 import { ClickableImage } from "./ImageLightbox";
 import { translate, useI18n, type Locale } from "@/lib/i18n";
 import { parseCompactionSummary } from "@/lib/compaction-summary";
@@ -510,6 +511,15 @@ function AssistantMessageView({
   liveTokensPerSecond?: number | null;
 }) {
   const { t, locale } = useI18n();
+  const { isSupported: ttsSupported, isSpeaking: ttsSpeaking, speakingId: ttsSpeakingId, toggle: ttsToggle } = useSpeechContext();
+  const speakableText = useMemo(() => {
+    return (message.content ?? [])
+      .filter((b): b is TextContent => b.type === "text" && typeof b.text === "string")
+      .map((b) => b.text)
+      .join("\n\n");
+  }, [message.content]);
+  const messageSpeechId = entryId ?? (message.timestamp ? String(message.timestamp) : "msg");
+  const isThisSpeaking = ttsSpeaking && ttsSpeakingId === messageSpeechId;
   const time = showTimestamp ? formatTime(message.timestamp, locale) : null;
   const bodyRef = useRef<HTMLDivElement>(null);
   const texts = (message.content ?? []).filter((block): block is TextContent => block.type === "text").map((block) => block.text);
@@ -737,10 +747,24 @@ function AssistantMessageView({
         )}
       </div>
 
-      {!isStreaming && (texts.some((text) => text.trim()) || time || canFork) && (
+      {!isStreaming && (texts.some((text) => text.trim()) || time || canFork || (ttsSupported && speakableText.trim().length > 0)) && (
         <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 6, marginTop: 3 }}>
           <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 3 }}>
             <MessageCopyActions texts={texts} bodyRef={bodyRef} />
+            {ttsSupported && speakableText.trim().length > 0 && (
+              <Tooltip content={isThisSpeaking ? t("messageView.stopSpeech") : t("messageView.readAloud")}>
+                <button
+                  type="button"
+                  className="message-copy-action"
+                  onClick={() => ttsToggle(messageSpeechId, speakableText)}
+                  aria-label={isThisSpeaking ? t("messageView.stopSpeech") : t("messageView.readAloud")}
+                  style={isThisSpeaking ? { color: "var(--accent)", background: "var(--bg-hover)" } : undefined}
+                >
+                  {isThisSpeaking ? <Square size={13} aria-hidden="true" /> : <Volume2 size={13} aria-hidden="true" />}
+                  <span>{isThisSpeaking ? t("messageView.stopSpeech") : t("messageView.readAloud")}</span>
+                </button>
+              </Tooltip>
+            )}
             {canFork && <ForkSessionButton entryId={forkEntryId!} onFork={onFork!} forking={forking} />}
           </div>
           {time && <span style={{ fontSize: 10, color: "var(--text-dim)", marginLeft: "auto" }}>{time}</span>}

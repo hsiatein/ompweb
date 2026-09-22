@@ -3581,3 +3581,19 @@ html.dark .dropdown-surface :is(select, option) {
     padding-bottom: max(10px, env(safe-area-inset-bottom)) !important;
   }
 }
+
+/* Dictation deck: indeterminate transcription progress. */
+@keyframes dictation-indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+.dictation-indeterminate {
+  animation: dictation-indeterminate 1.2s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dictation-indeterminate {
+    animation: none;
+    left: 30%;
+    width: 40% !important;
+  }
+}
