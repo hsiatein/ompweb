@@ -7,6 +7,14 @@ import { archiveSession, sessionHasChildren } from "./session-archive";
 import { readSessionHeader, resolveSessionPath } from "./session-reader";
 import { nextRunAfter, parseScheduleRepeat, type ScheduleRepeat } from "./schedule-recurrence";
 import { isRecord } from "./type-guards";
+import {
+  INTERFACE_NAME_RE,
+  listNetworkInterfaces,
+  reconcileWebhookListeners,
+  webhookListenerError,
+  webhookListenerUrl,
+  type WebhookBinding,
+} from "./webhook-listeners";
 
 /**
  * Recurring scheduled prompts, two kinds:
@@ -63,12 +71,33 @@ export interface ScheduledTask {
   webhookToken?: string;
   /** Append the webhook request body to the prompt (as untrusted data). */
   webhookIncludeBody: boolean;
+  /**
+   * Where the webhook URL works. Absent: omp-web's own `/api/hooks/<token>`
+   * (wherever omp-web listens). Set: only on a dedicated listener bound to
+   * these interfaces' addresses on this port (lib/webhook-listeners.ts).
+   */
+  webhookListen?: WebhookListen;
   /** Created by the agent of `targetSessionId` through the scheduled_tasks tool. */
   createdByAgent?: boolean;
   /** Deleted once its single run has been delivered (webhook wake-ups, "once"). */
   oneShot?: boolean;
   /** Deleted unused at this time (agent wake-up webhooks). */
   expiresAt?: number;
+}
+
+export interface WebhookListen {
+  /** Network interface names (`lo`, `enp5s0`, `wg0`); their current addresses are bound. */
+  interfaces: string[];
+  port: number;
+}
+
+/** One URL of a dedicated-listener webhook, as shown to the browser. */
+export interface WebhookEndpointView {
+  iface: string;
+  address?: string;
+  url?: string;
+  /** "interface_down" (no address now) or the bind error code (EADDRINUSE, ...). */
+  error?: string;
 }
 
 /** A run as listed to the browser: `running` is live process state. */
@@ -78,6 +107,8 @@ export interface ScheduledTaskRunView extends ScheduledTaskRun {
 
 export interface ScheduledTaskView extends Omit<ScheduledTask, "runs"> {
   runs: ScheduledTaskRunView[];
+  /** Dedicated-listener URLs (tasks with `webhookListen` and a token). */
+  webhookEndpoints?: WebhookEndpointView[];
 }
 
 export const MAX_TASK_MESSAGE_CHARS = 100_000;
@@ -91,6 +122,9 @@ const MAX_ONCE_AHEAD_MS = 366 * 24 * 60 * 60 * 1000;
 export const MAX_WEBHOOK_PAYLOAD_CHARS = 16_000;
 /** base64url of 32 random bytes. */
 export const WEBHOOK_TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;
+const MAX_WEBHOOK_INTERFACES = 16;
+/** How often listeners follow interface changes (a VPN coming up, a new DHCP lease). */
+const LISTENER_RESCAN_MS = 30_000;
 const MAX_RUN_RECORDS = 50;
 const MAX_TASKS = 200;
 /** Unfinished tasks one session's agent may have at a time. */
@@ -107,6 +141,7 @@ interface TaskSchedulerState {
   /** Deletion timers of tasks with `expiresAt`. */
   expiries: Map<string, NodeJS.Timeout>;
   armed: boolean;
+  rescan: NodeJS.Timeout | null;
 }
 
 declare global {
@@ -116,7 +151,7 @@ declare global {
 // On globalThis so timers survive Next.js hot-reload and every route bundle
 // shares one scheduler.
 function state(): TaskSchedulerState {
-  globalThis.__ompScheduledTasks ??= { timers: new Map(), watchdogs: new Map(), expiries: new Map(), armed: false };
+  globalThis.__ompScheduledTasks ??= { timers: new Map(), watchdogs: new Map(), expiries: new Map(), armed: false, rescan: null };
   return globalThis.__ompScheduledTasks;
 }
 
@@ -140,6 +175,19 @@ function boundedInt(value: unknown, fallback: number, min: number, max: number):
   return typeof value === "number" && Number.isInteger(value) && value >= min && value <= max ? value : fallback;
 }
 
+/** A stored or submitted `webhookListen`: a string reason when malformed, null when absent. */
+function parseWebhookListen(raw: unknown): WebhookListen | null | string {
+  if (raw === undefined || raw === null) return null;
+  if (!isRecord(raw) || !Array.isArray(raw.interfaces)) return "webhookListen needs interfaces and port";
+  const interfaces = [...new Set(raw.interfaces)];
+  if (interfaces.length === 0) return "Choose at least one network interface";
+  if (interfaces.length > MAX_WEBHOOK_INTERFACES) return `At most ${MAX_WEBHOOK_INTERFACES} interfaces`;
+  if (!interfaces.every((name): name is string => typeof name === "string" && INTERFACE_NAME_RE.test(name))) return "Invalid interface name";
+  const port = raw.port;
+  if (typeof port !== "number" || !Number.isInteger(port) || port < 1 || port > 65535) return "Port must be 1-65535";
+  return { interfaces, port };
+}
+
 function parseRun(raw: unknown): ScheduledTaskRun | null {
   if (!isRecord(raw) || typeof raw.startedAt !== "number") return null;
   if (raw.status !== "started" && raw.status !== "skipped" && raw.status !== "failed") return null;
@@ -160,6 +208,9 @@ function parseTask(raw: unknown): ScheduledTask | null {
   if (typeof id !== "string" || typeof name !== "string" || typeof cwd !== "string" || typeof message !== "string") return null;
   const repeat = parseScheduleRepeat(raw.repeat);
   if (typeof repeat === "string") return null;
+  // A hand-edited, malformed listen setting must not widen where the URL
+  // works: such a task keeps no token (regenerate it after fixing the file).
+  const listen = parseWebhookListen(raw.webhookListen);
   return {
     id,
     name,
@@ -178,8 +229,9 @@ function parseTask(raw: unknown): ScheduledTask | null {
     createdAt: typeof raw.createdAt === "number" ? raw.createdAt : Date.now(),
     nextRunAt: typeof raw.nextRunAt === "number" && Number.isFinite(raw.nextRunAt) ? raw.nextRunAt : null,
     runs: Array.isArray(raw.runs) ? raw.runs.map(parseRun).filter((run): run is ScheduledTaskRun => run !== null) : [],
-    ...(typeof raw.webhookToken === "string" && WEBHOOK_TOKEN_RE.test(raw.webhookToken) ? { webhookToken: raw.webhookToken } : {}),
+    ...(typeof raw.webhookToken === "string" && WEBHOOK_TOKEN_RE.test(raw.webhookToken) && typeof listen !== "string" ? { webhookToken: raw.webhookToken } : {}),
     webhookIncludeBody: raw.webhookIncludeBody === true,
+    ...(listen && typeof listen !== "string" ? { webhookListen: listen } : {}),
     ...(raw.createdByAgent === true ? { createdByAgent: true } : {}),
     ...(raw.oneShot === true ? { oneShot: true } : {}),
     ...(typeof raw.expiresAt === "number" && Number.isFinite(raw.expiresAt) ? { expiresAt: raw.expiresAt } : {}),
@@ -428,10 +480,52 @@ export function ensureScheduledTasksArmed(): void {
   if (current.armed) return;
   current.armed = true;
   for (const task of loadTasks()) arm(task);
+  syncWebhookListeners();
+  // Interface addresses change under a running server (VPN up, new lease).
+  current.rescan = setInterval(syncWebhookListeners, LISTENER_RESCAN_MS);
+  current.rescan.unref?.();
+}
+
+/** Tasks whose URL works only on a dedicated listener (and still has one). */
+function listenerTasks(tasks: ScheduledTask[]): Array<ScheduledTask & { webhookListen: WebhookListen; webhookToken: string }> {
+  return tasks.filter((task): task is ScheduledTask & { webhookListen: WebhookListen; webhookToken: string } =>
+    task.repeat.kind === "webhook" && task.webhookListen !== undefined && task.webhookToken !== undefined);
+}
+
+/** Bind what the dedicated-listener tasks need at the interfaces' current addresses. */
+function syncWebhookListeners(): void {
+  const addresses = new Map(listNetworkInterfaces().map((entry) => [entry.name, entry.addresses]));
+  const wanted: WebhookBinding[] = [];
+  for (const task of listenerTasks(loadTasks())) {
+    for (const iface of task.webhookListen.interfaces) {
+      for (const address of addresses.get(iface) ?? []) wanted.push({ iface, address, port: task.webhookListen.port });
+    }
+  }
+  reconcileWebhookListeners(wanted, (binding, token, payload) => triggerScheduledTaskWebhook(token, payload, binding));
+}
+
+function webhookEndpoints(task: ScheduledTask): WebhookEndpointView[] | undefined {
+  if (task.repeat.kind !== "webhook" || !task.webhookListen || !task.webhookToken) return undefined;
+  const { port, interfaces } = task.webhookListen;
+  const token = task.webhookToken;
+  const addresses = new Map(listNetworkInterfaces().map((entry) => [entry.name, entry.addresses]));
+  return interfaces.flatMap((iface): WebhookEndpointView[] => {
+    const bound = addresses.get(iface) ?? [];
+    if (bound.length === 0) return [{ iface, error: "interface_down" }];
+    return bound.map((address) => {
+      const error = webhookListenerError(address, port);
+      return { iface, address, url: webhookListenerUrl(address, port, token), ...(error ? { error } : {}) };
+    });
+  });
 }
 
 function toView(task: ScheduledTask): ScheduledTaskView {
-  return { ...task, runs: task.runs.map((run) => ({ ...run, running: run.status === "started" && sessionRunning(run.sessionId) })) };
+  const endpoints = webhookEndpoints(task);
+  return {
+    ...task,
+    runs: task.runs.map((run) => ({ ...run, running: run.status === "started" && sessionRunning(run.sessionId) })),
+    ...(endpoints ? { webhookEndpoints: endpoints } : {}),
+  };
 }
 
 export function listScheduledTasks(): ScheduledTaskView[] {
@@ -453,6 +547,8 @@ export interface ScheduledTaskInput {
   maxRunMinutes?: unknown;
   targetSessionId?: unknown;
   webhookIncludeBody?: unknown;
+  /** `{ interfaces, port }` for a dedicated listener; null/absent = omp-web's own URL. */
+  webhookListen?: unknown;
 }
 
 /** Validate a full task definition (create, or edit with every field sent).
@@ -494,6 +590,8 @@ async function validateInput(input: ScheduledTaskInput): Promise<Omit<ScheduledT
     throw new TaskValidationError(`maxRunMinutes must be 0-${MAX_RUN_MINUTES}`, "invalid_max_run");
   }
   const thinkingLevel = optionalString(input.thinkingLevel);
+  const webhookListen = repeat.kind === "webhook" ? parseWebhookListen(input.webhookListen) : null;
+  if (typeof webhookListen === "string") throw new TaskValidationError(webhookListen, "invalid_webhook_listen");
   return {
     name,
     cwd,
@@ -507,6 +605,7 @@ async function validateInput(input: ScheduledTaskInput): Promise<Omit<ScheduledT
     keepRuns,
     maxRunMinutes,
     webhookIncludeBody: input.webhookIncludeBody === true,
+    ...(webhookListen ? { webhookListen } : {}),
   };
 }
 
@@ -528,6 +627,7 @@ export async function createScheduledTask(input: ScheduledTaskInput, now = Date.
   };
   saveTasks([...loadTasks(), task]);
   arm(task);
+  syncWebhookListeners();
   return toView(task);
 }
 
@@ -551,6 +651,7 @@ export async function updateScheduledTask(id: string, input: ScheduledTaskInput,
   }));
   if (!task) return null;
   arm(task);
+  syncWebhookListeners();
   return toView(task);
 }
 
@@ -581,12 +682,20 @@ function tokenMatches(stored: string | undefined, presented: string): boolean {
 }
 
 /** Run the webhook task owning `token`. The token is the only credential, so
- * an unknown or malformed token and a non-webhook task look the same. */
-export function triggerScheduledTaskWebhook(token: string, payload: string | null): "accepted" | "not_found" | "disabled" {
+ * an unknown or malformed token and a non-webhook task look the same.
+ * `via` is the dedicated listener the call arrived on (null: omp-web's own
+ * route). A task answers only where it listens, so a URL limited to, say,
+ * the WireGuard interface does not also work on omp-web's own address. */
+export function triggerScheduledTaskWebhook(token: string, payload: string | null, via: WebhookBinding | null = null): "accepted" | "not_found" | "disabled" {
   if (!WEBHOOK_TOKEN_RE.test(token)) return "not_found";
   ensureScheduledTasksArmed();
   const task = loadTasks().find((item) => item.repeat.kind === "webhook" && tokenMatches(item.webhookToken, token));
   if (!task) return "not_found";
+  const listen = task.webhookListen;
+  const reachable = listen
+    ? via !== null && via.port === listen.port && listen.interfaces.includes(via.iface)
+    : via === null;
+  if (!reachable) return "not_found";
   if (!task.enabled) return "disabled";
   // A one-shot URL is spent by its first call, before the run starts, so a
   // retrying caller cannot wake the session twice.
@@ -609,6 +718,7 @@ export function deleteScheduledTask(id: string): boolean {
   if (removed) {
     updateTask(id, () => null);
     disarm(id);
+    syncWebhookListeners();
   }
   return removed;
 }
@@ -625,6 +735,8 @@ export interface AgentTaskInput {
   repeat?: unknown;
   /** Webhook only: hours until an unused URL is deleted. */
   expiresInHours?: unknown;
+  /** Webhook only: `{ interfaces, port }`, a dedicated listener instead of omp-web's own URL. */
+  webhookListen?: unknown;
 }
 
 function agentTasksOf(sessionId: string): ScheduledTask[] {
@@ -644,8 +756,12 @@ export async function createAgentTask(callerSessionId: string, input: AgentTaskI
     repeat: input.repeat,
     targetSessionId: callerSessionId,
     webhookIncludeBody: true,
+    webhookListen: input.webhookListen,
   });
   const webhook = definition.repeat.kind === "webhook";
+  if (!webhook && input.webhookListen !== undefined && input.webhookListen !== null) {
+    throw new TaskValidationError("Only a webhook trigger can choose where it listens", "invalid_webhook_listen");
+  }
   let expiresAt: number | undefined;
   if (webhook) {
     const hours = input.expiresInHours === undefined ? DEFAULT_AGENT_WEBHOOK_HOURS : input.expiresInHours;
@@ -667,6 +783,7 @@ export async function createAgentTask(callerSessionId: string, input: AgentTaskI
   };
   saveTasks([...loadTasks(), task]);
   arm(task);
+  syncWebhookListeners();
   return toView(task);
 }
 

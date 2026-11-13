@@ -7,7 +7,7 @@ import { getAgentDir } from "./omp/paths";
 import type { BrowserScene } from "./wallpaper-scene-types";
 
 // Bump when compiler output or asset conversion semantics change.
-export const SCENE_CACHE_REVISION = 5;
+export const SCENE_CACHE_REVISION = 6;
 const MAX_MANIFEST = 64 * 1024 * 1024, MAX_RECORD = 2 * 1024 * 1024;
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const compress = promisify(gzip);

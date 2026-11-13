@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProp
 import { createPortal } from "react-dom";
 import { useI18n } from "@/lib/i18n";
 import { usePrefersReducedMotion } from "@/hooks/usePrefersReducedMotion";
-import { AlertTriangle } from "lucide-react";
+import { AlertTriangle, Bot } from "lucide-react";
 import OmpWebLogo from "./OmpWebLogo";
 /**
  * Path label that ellipsizes on the LEFT, keeping the (most relevant) trailing
@@ -397,6 +397,22 @@ function RunningSessionIndicator({ size = 14 }: { size?: number }) {
     </span>
   );
 }
+/** The main run is idle but its subagents (background tasks) are still working. */
+function SubagentSessionIndicator({ count }: { count: number }) {
+  const { t } = useI18n();
+  const label = t("sessionSidebar.subagentsRunning", { count });
+  return (
+    <span
+      title={label}
+      aria-label={label}
+      className="sidebar-subagent-indicator"
+      style={{ display: "inline-flex", alignItems: "center", gap: 1, flexShrink: 0, color: "var(--accent)", fontSize: 10, fontWeight: 600, fontVariantNumeric: "tabular-nums", lineHeight: 1 }}
+    >
+      <Bot size={12} strokeWidth={2.2} aria-hidden="true" />
+      {count}
+    </span>
+  );
+}
 function ExitedSessionIndicator({ title, size = 14 }: { title: string; size?: number }) {
   return (
     <span
@@ -451,6 +467,7 @@ export {
   PathLabel,
   ExitedSessionIndicator,
   RunningSessionIndicator,
+  SubagentSessionIndicator,
   SIDEBAR_BUTTON_TRANSITION,
   SidebarIconButton,
   SidebarPortalMenu,

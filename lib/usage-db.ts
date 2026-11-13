@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, statSync } from "fs";
+import { existsSync, mkdirSync, readdirSync, statSync } from "fs";
 import { DatabaseSync } from "node:sqlite";
 import { basename, dirname, join } from "path";
 import { readModelsConfig, type ModelsFileConfig } from "./omp/models-config";
@@ -93,7 +93,9 @@ export function getUsageDatabase(customPath?: string): DatabaseSync {
       total_tokens INTEGER NOT NULL,
       cost REAL NOT NULL,
       cache_savings REAL NOT NULL,
-      cost_quality TEXT NOT NULL
+      cost_quality TEXT NOT NULL,
+      duration_ms INTEGER,
+      ttft_ms INTEGER
     );
 
     CREATE INDEX IF NOT EXISTS idx_usage_records_timestamp ON usage_records(timestamp);
@@ -101,6 +103,20 @@ export function getUsageDatabase(customPath?: string): DatabaseSync {
     CREATE INDEX IF NOT EXISTS idx_usage_records_provider ON usage_records(provider);
     CREATE INDEX IF NOT EXISTS idx_usage_records_session_cwd ON usage_records(session_cwd);
   `);
+
+  // Databases from before request speeds were recorded: add the columns and
+  // rescan every file once, since already-synced rows carry no durations.
+  const columns = new Set((db.prepare("PRAGMA table_info(usage_records)").all() as Array<{ name: string }>).map((c) => c.name));
+  if (!columns.has("duration_ms")) {
+    db.exec(`
+      BEGIN TRANSACTION;
+      ALTER TABLE usage_records ADD COLUMN duration_ms INTEGER;
+      ALTER TABLE usage_records ADD COLUMN ttft_ms INTEGER;
+      DELETE FROM usage_records;
+      DELETE FROM synced_files;
+      COMMIT;
+    `);
+  }
 
   globalThis.__ompUsageDatabase = db;
   globalThis.__ompUsageDatabasePath = targetPath;
@@ -128,7 +144,39 @@ export interface SyncStats {
 }
 
 /**
- * Incrementally sync all session .jsonl files into the SQLite usage database.
+ * The subagent transcripts of one top-level session: omp writes them under
+ * `<session file without .jsonl>/`, nested subagents one directory deeper
+ * (`<parent>/<Parent>/<Parent.Child>.jsonl`).
+ */
+export function subagentTranscripts(sessionFile: string): string[] {
+  const found: string[] = [];
+  const walk = (dir: string) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const path = join(dir, entry.name);
+      if (entry.isDirectory()) walk(path);
+      else if (entry.isFile() && entry.name.endsWith(".jsonl")) found.push(path);
+    }
+  };
+  if (sessionFile.endsWith(".jsonl")) walk(sessionFile.slice(0, -".jsonl".length));
+  return found;
+}
+
+/** `<timestamp>_<session id>.jsonl` → session id (the header id; the file name is omp's). */
+function sessionIdOfFile(sessionFile: string): string {
+  const name = basename(sessionFile, ".jsonl");
+  const separator = name.lastIndexOf("_");
+  return separator >= 0 ? name.slice(separator + 1) : name;
+}
+
+/**
+ * Incrementally sync all session .jsonl files into the SQLite usage database,
+ * each with its subagents' transcripts (counted toward that session).
  * Only parses files that are new or whose mtime/size has changed.
  */
 export function syncSessionFilesToDb(
@@ -138,6 +186,10 @@ export function syncSessionFilesToDb(
 ): SyncStats {
   const db = customDb || getUsageDatabase();
   const now = Date.now();
+  const usageFiles: Array<{ filePath: string; ownerSessionId?: string }> = sessionFiles.flatMap((filePath) => {
+    const ownerSessionId = sessionIdOfFile(filePath);
+    return [{ filePath }, ...subagentTranscripts(filePath).map((transcript) => ({ filePath: transcript, ownerSessionId }))];
+  });
 
   // 1. Fetch currently synced files from SQLite
   const syncedRows = db.prepare("SELECT file_path, mtime_ms, file_size FROM synced_files").all() as Array<{
@@ -158,11 +210,13 @@ export function syncSessionFilesToDb(
     INSERT INTO usage_records (
       file_path, session_id, session_cwd, timestamp, provider, model,
       input_tokens, output_tokens, reasoning_tokens, cache_read_tokens,
-      cache_write_tokens, total_tokens, cost, cache_savings, cost_quality
+      cache_write_tokens, total_tokens, cost, cache_savings, cost_quality,
+      duration_ms, ttft_ms
     ) VALUES (
       ?, ?, ?, ?, ?, ?,
       ?, ?, ?, ?,
-      ?, ?, ?, ?, ?
+      ?, ?, ?, ?, ?,
+      ?, ?
     )
   `);
 
@@ -175,7 +229,7 @@ export function syncSessionFilesToDb(
   const currentFilesSet = new Set<string>();
 
   // 2. Incremental sync for new / modified files
-  for (const filePath of sessionFiles) {
+  for (const { filePath, ownerSessionId } of usageFiles) {
     let stats;
     try {
       stats = statSync(filePath);
@@ -191,7 +245,7 @@ export function syncSessionFilesToDb(
     }
 
     // Parse records from disk
-    const records: UsageRecord[] = parseSessionUsage(filePath, customModelsConfig);
+    const records: UsageRecord[] = parseSessionUsage(filePath, customModelsConfig, ownerSessionId);
 
     // Save in transaction
     db.exec("BEGIN TRANSACTION;");
@@ -215,6 +269,8 @@ export function syncSessionFilesToDb(
           r.cost,
           r.cacheSavings,
           r.costQuality,
+          r.durationMs,
+          r.ttftMs,
         );
         recordsInserted++;
       }
@@ -248,7 +304,7 @@ export function syncSessionFilesToDb(
   }
 
   return {
-    filesScanned: sessionFiles.length,
+    filesScanned: usageFiles.length,
     filesUpdated,
     filesDeleted,
     recordsInserted,
@@ -524,7 +580,13 @@ export async function getUsageReportFromDb(
         COALESCE(SUM(cache_read_tokens), 0) AS cacheReadTokens,
         COALESCE(SUM(cache_write_tokens), 0) AS cacheWriteTokens,
         COALESCE(SUM(reasoning_tokens), 0) AS reasoningTokens,
-        COUNT(*) AS recordsCount
+        COUNT(*) AS recordsCount,
+        COUNT(duration_ms) AS speedSamples,
+        AVG(output_tokens * 1000.0 / duration_ms) AS meanTps,
+        SUM(CASE WHEN duration_ms IS NOT NULL THEN output_tokens END) * 1000.0 / SUM(duration_ms) AS tokenWeightedTps,
+        AVG(CASE WHEN ttft_ms IS NOT NULL AND duration_ms - ttft_ms >= 100
+          THEN output_tokens * 1000.0 / (duration_ms - ttft_ms) END) AS meanDecodeTps,
+        AVG(ttft_ms) AS meanTtftMs
       FROM usage_records
       WHERE timestamp >= ? AND timestamp <= ? ${whereProject}
       GROUP BY model, provider
@@ -542,6 +604,11 @@ export async function getUsageReportFromDb(
     cacheWriteTokens: number;
     reasoningTokens: number;
     recordsCount: number;
+    speedSamples: number;
+    meanTps: number | null;
+    tokenWeightedTps: number | null;
+    meanDecodeTps: number | null;
+    meanTtftMs: number | null;
   }>;
 
   const modelBreakdown: ModelUsageSummary[] = modelRows.map((row) => ({

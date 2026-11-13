@@ -39,7 +39,9 @@ test("attaches todo plan and subagent roster with live states", () => {
   assert.match(html, /class="composer-todo-panel wallpaper-surface /);
   assert.match(html, /class="ui-focus-ring wallpaper-inset"/);
   assert.match(html, /Map the surface/);
-  assert.match(html, /worker/);
+  // Finished subagents sit in their own group, folded by default: only its count shows.
+  assert.match(html, /Finished · 1/);
+  assert.doesNotMatch(html, /Write the code/);
   assert.match(html, /aria-label="1 running · 2 total"/);
   assert.doesNotMatch(html, />1 running · 2 total</);
 });
@@ -139,6 +141,7 @@ test("history chips render terminal telemetry without pulsing state", () => {
     }],
     onSelectSubagent: noop,
     defaultExpanded: true,
+    finishedExpanded: true,
   }));
   assert.match(html, /Map the surface/);
   assert.match(html, /data-subagent-metric="999k tok"/);
@@ -186,6 +189,7 @@ test("history chips mark detached async spawns", () => {
     }],
     onSelectSubagent: noop,
     defaultExpanded: true,
+    finishedExpanded: true,
   }));
   assert.match(html, /⤴/);
 });

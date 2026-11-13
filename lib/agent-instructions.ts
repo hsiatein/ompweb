@@ -3,7 +3,13 @@ export type AgentInstructionTarget =
   | { scope: "provider"; provider: string }
   | { scope: "model"; provider: string; modelId: string };
 
-export type AgentInstructionRule = AgentInstructionTarget & { text: string };
+/**
+ * How a provider/model rule relates to the broader level: replace (default, stored as an absent field)
+ * or append (the broader effective instructions apply too, this text after them).
+ */
+export type AgentInstructionCombine = "replace" | "append";
+
+export type AgentInstructionRule = AgentInstructionTarget & { text: string; combine?: "append" };
 
 export const MAX_AGENT_INSTRUCTION_LENGTH = 20_000;
 export const MAX_AGENT_INSTRUCTION_RULES = 100;
@@ -36,8 +42,13 @@ export function parseAgentInstructionRule(value: unknown): AgentInstructionRule 
   if (typeof text !== "string" || text.length > MAX_AGENT_INSTRUCTION_LENGTH || text.includes("\0")) {
     throw new AgentInstructionValidationError(`Instructions must be text of at most ${MAX_AGENT_INSTRUCTION_LENGTH} characters`);
   }
-  // Empty text is an explicit override, not an absent rule.
-  return { ...target, text };
+  const { combine } = value as Record<string, unknown>;
+  if (combine !== undefined && combine !== "replace" && combine !== "append") {
+    throw new AgentInstructionValidationError("combine must be replace or append");
+  }
+  // Empty text is an explicit override, not an absent rule. Appending applies only below global
+  // and to non-empty text (an empty appending rule would just be inheritance).
+  return { ...target, text, ...(combine === "append" && target.scope !== "global" && text ? { combine } : {}) };
 }
 
 export function sameInstructionTarget(a: AgentInstructionTarget, b: AgentInstructionTarget): boolean {
@@ -46,20 +57,36 @@ export function sameInstructionTarget(a: AgentInstructionTarget, b: AgentInstruc
     && (a.scope !== "model" || (b.scope === "model" && a.modelId === b.modelId));
 }
 
-/** Exact provider + model identity; the winner replaces, never concatenates, broader rules. */
+/**
+ * Rules that apply for an exact provider + model identity, broadest first. The most specific saved
+ * rule always applies; it pulls in the next broader level's rules only when it appends. A replacing
+ * rule (including an empty one, which blocks) stops the walk. Empty list: nothing applies.
+ */
 export function resolveAgentInstructions(
   rules: readonly AgentInstructionRule[],
   provider?: string,
   modelId?: string,
-): AgentInstructionRule | undefined {
+): AgentInstructionRule[] {
   let globalRule: AgentInstructionRule | undefined;
   let providerRule: AgentInstructionRule | undefined;
+  let modelRule: AgentInstructionRule | undefined;
   for (const rule of rules) {
     if (rule.scope === "global") globalRule = rule;
     else if (rule.provider === provider) {
-      if (rule.scope === "model" && rule.modelId === modelId) return rule;
+      if (rule.scope === "model" && rule.modelId === modelId) modelRule = rule;
       if (rule.scope === "provider") providerRule = rule;
     }
   }
-  return providerRule ?? globalRule;
+  const applied: AgentInstructionRule[] = [];
+  for (const rule of [modelRule, providerRule, globalRule]) {
+    if (!rule) continue;
+    applied.unshift(rule);
+    if (rule.combine !== "append") break;
+  }
+  return applied;
+}
+
+/** The prompt texts to append to the system prompt, broadest first. */
+export function agentInstructionTexts(rules: readonly AgentInstructionRule[], provider?: string, modelId?: string): string[] {
+  return resolveAgentInstructions(rules, provider, modelId).map((rule) => rule.text).filter(Boolean);
 }

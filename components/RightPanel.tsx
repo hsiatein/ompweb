@@ -21,11 +21,13 @@ import { GitChangesPanel } from "./GitChangesPanel";
 import { FileViewer } from "./FileViewer";
 import { TerminalPanel } from "./TerminalPanel";
 import { SystemPanel } from "./SystemPanel";
+import { StatusBoardPanel } from "./StatusBoardPanel";
 import { useI18n } from "@/lib/i18n";
 import { getFileName } from "@/lib/file-paths";
 import type { FileEditorStatus, FileMutation } from "@/lib/file-editing";
+import { PluginFrame, type OpenPluginPage } from "./PluginPage";
 
-export type RightPanelView = "explorer" | "git" | "terminal" | "system" | "file";
+export type RightPanelView = "explorer" | "git" | "terminal" | "system" | "status" | "file" | "plugin";
 
 interface Props {
   fileTabs: Tab[];
@@ -33,6 +35,8 @@ interface Props {
   rightView: RightPanelView;
   onSelectView: (view: RightPanelView) => void;
   rightPanelOpen: boolean;
+  /** The chat is collapsed: the panel takes the chat's room (no resize handle). */
+  rightPanelFill?: boolean;
   rightPanelWidth: number | null;
   rightPanelResizing: boolean;
   rightPanelRef: RefObject<HTMLDivElement | null>;
@@ -76,6 +80,15 @@ interface Props {
   onRightPanelResizeKey: (e: React.KeyboardEvent) => void;
   /** Latest "Open in terminal" request; a new id starts a shell in its cwd. */
   terminalRequest: { id: number; cwd: string } | null;
+  /** Web plugin page shown as its own tab (opened from the sidebar plugin list). */
+  openPlugin: OpenPluginPage | null;
+  pluginFrameKey: number;
+  onReloadPlugin: () => void;
+  onClosePlugin: () => void;
+  /** The chat on screen: its status board section comes first. */
+  currentSessionId: string | null;
+  /** Status board: open another session's chat. */
+  onOpenSession: (sessionId: string, cwd: string) => void;
 }
 
 // Memo boundary: AppShell re-renders on polls, timers, and session updates
@@ -89,6 +102,7 @@ export const RightPanel = memo(function RightPanel({
   rightView,
   onSelectView,
   rightPanelOpen,
+  rightPanelFill = false,
   rightPanelWidth,
   rightPanelResizing,
   rightPanelRef,
@@ -131,9 +145,16 @@ export const RightPanel = memo(function RightPanel({
   onRightPanelResizeStart,
   onRightPanelResizeKey,
   terminalRequest,
+  openPlugin,
+  pluginFrameKey,
+  onReloadPlugin,
+  onClosePlugin,
+  currentSessionId,
+  onOpenSession,
 }: Props) {
   const { t } = useI18n();
   const [systemWarning, setSystemWarning] = useState(false);
+  const [statusBadge, setStatusBadge] = useState<{ live: number; failed: boolean }>({ live: 0, failed: false });
   const activeFileTab = fileTabs.find((tab) => tab.id === activeFileTabId) ?? null;
   const gitBadge = explorerIsRepo ? explorerGitCount : 0;
   const [visitedViews, setVisitedViews] = useState<Set<RightPanelView>>(() => new Set(["explorer"]));
@@ -149,7 +170,7 @@ export const RightPanel = memo(function RightPanel({
   return (
     <>
       {/* Resize handle — desktop only, hidden while the panel is closed */}
-      {!isMobile && rightPanelOpen && (
+      {!isMobile && rightPanelOpen && !rightPanelFill && (
         <div
           className="right-panel-resize-handle"
           role="separator"
@@ -180,7 +201,7 @@ export const RightPanel = memo(function RightPanel({
       <aside
         id="workspace-file-panel"
         ref={rightPanelRef}
-        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelResizing ? " right-panel-resizing" : ""}`}
+        className={`right-panel-container${rightPanelOpen ? " right-panel-open" : " right-panel-closed"}${rightPanelFill ? " right-panel-fill" : ""}${rightPanelResizing ? " right-panel-resizing" : ""}`}
         role={isCompactOverlay && rightPanelOpen ? "dialog" : undefined}
         aria-modal={isCompactOverlay && rightPanelOpen ? true : undefined}
         aria-label={t("appShell.filePanel")}
@@ -214,6 +235,13 @@ export const RightPanel = memo(function RightPanel({
               onSelectTerminal={() => onSelectView("terminal")}
               systemSelected={rightView === "system"}
               onSelectSystem={() => onSelectView("system")}
+              statusSelected={rightView === "status"}
+              onSelectStatus={() => onSelectView("status")}
+              statusBadge={statusBadge}
+              pluginTab={openPlugin ? { name: openPlugin.name, iconUrl: openPlugin.iconUrl } : null}
+              pluginSelected={rightView === "plugin"}
+              onSelectPlugin={() => onSelectView("plugin")}
+              onClosePlugin={onClosePlugin}
               systemWarning={systemWarning}
               onCloseOtherTabs={onCloseOtherFileTabs}
               onCloseAllTabs={onCloseAllFileTabs}
@@ -283,6 +311,21 @@ export const RightPanel = memo(function RightPanel({
                 onMouseLeave={(e) => { if (explorerRefreshing) return; e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
               >
                 <RefreshCw size={13} strokeWidth={2} aria-hidden="true" className={explorerRefreshing ? "icon-spin" : undefined} />
+              </button>
+            </div>
+            )
+          ) : rightView === "plugin" ? (
+            openPlugin && (
+            <div style={{ display: "flex", alignItems: "center", flexShrink: 0, padding: "0 2px" }} role="toolbar" aria-label={openPlugin.name}>
+              <button
+                aria-label={t("plugins.reloadPage")}
+                onClick={onReloadPlugin}
+                title={t("plugins.reloadPage")}
+                style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 26, height: 26, padding: 0, background: "none", border: "none", borderRadius: "var(--radius-control)", color: "var(--text-dim)", cursor: "pointer" }}
+                onMouseEnter={(e) => { e.currentTarget.style.color = "var(--text-muted)"; e.currentTarget.style.background = "var(--bg-hover)"; }}
+                onMouseLeave={(e) => { e.currentTarget.style.color = "var(--text-dim)"; e.currentTarget.style.background = "none"; }}
+              >
+                <RefreshCw size={13} strokeWidth={2} aria-hidden="true" />
               </button>
             </div>
             )
@@ -455,6 +498,16 @@ export const RightPanel = memo(function RightPanel({
           {visitedViews.has("system") && (
             <SystemPanel active={rightPanelOpen && rightView === "system"} onWarningChange={setSystemWarning} />
           )}
+        </div>
+        {/* Status board view — always mounted (it keeps the tab badge current); renders only while shown. */}
+        <div id="workspace-file-panel-status" role="tabpanel" aria-label={t("statusBoard.title")} style={{ display: rightView === "status" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+          <StatusBoardPanel active={rightPanelOpen && rightView === "status"} currentSessionId={currentSessionId} onOpenSession={onOpenSession} onSummaryChange={setStatusBadge} />
+        </div>
+        {/* Plugin tab view — the page stays mounted while other tabs are shown.
+            The frosted glass comes from this host element: an iframe's own
+            backdrop-filter cannot see the wallpaper behind it. */}
+        <div id="workspace-file-panel-plugin" className="wallpaper-surface" role="tabpanel" aria-label={openPlugin?.name ?? t("plugins.title")} style={{ display: rightView === "plugin" ? "flex" : "none", flexDirection: "column", flex: 1, minHeight: 0, overflow: "hidden" }}>
+          {openPlugin && <PluginFrame plugin={openPlugin} frameKey={pluginFrameKey} />}
         </div>
         {/* Keep open viewers mounted so switching tabs preserves scroll and preview state. */}
         <div id="workspace-file-panel-file" role="tabpanel" aria-label={activeFileTab?.filePath ?? t("appShell.filePanel")} style={{ display: rightView === "file" ? "block" : "none", flex: 1, minHeight: 0, overflow: "hidden" }}>

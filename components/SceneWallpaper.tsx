@@ -4,12 +4,14 @@ import type { BrowserSceneRenderer } from "@/lib/wallpaper-scene-renderer";
 import { WallpaperAudio, activateWallpaperAudio } from "@/lib/wallpaper-audio";
 import { sceneAudioCache, sceneManifest } from "@/lib/wallpaper-client-cache";
 
-export function SceneWallpaper({ id, paused, volume = 50, muted = false, bgm = null, style, onReady, onError }: {
-  id: string; paused: boolean; volume?: number; muted?: boolean; bgm?: string | null; style: CSSProperties; onReady: () => void; onError: (message: string) => void;
+export function SceneWallpaper({ id, paused, form = "", volume = 50, muted = false, bgm = null, style, onReady, onError }: {
+  id: string; paused: boolean; form?: string; volume?: number; muted?: boolean; bgm?: string | null; style: CSSProperties; onReady: () => void; onError: (message: string) => void;
 }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const renderer = useRef<BrowserSceneRenderer | null>(null);
   const pause = useRef(paused);
+  const selectedForm = useRef(form);
+  useEffect(() => { selectedForm.current = form; renderer.current?.setForm(form); }, [form]);
   const audio = useRef<WallpaperAudio | null>(null);
   const audioSettings = useRef({ paused, volume, muted });
   const replacement = useRef(bgm);
@@ -28,9 +30,10 @@ export function SceneWallpaper({ id, paused, volume = 50, muted = false, bgm = n
         ]);
         if (canvas.current) canvas.current.dataset.compatibilityWarnings = JSON.stringify(data.warnings || []);
         if (disposed || !canvas.current) return;
-        const engine = await BrowserSceneRenderer.create(canvas.current, data, controller.signal, message => callbacks.current.onError(message));
+        const engine = await BrowserSceneRenderer.create(canvas.current, data, controller.signal, message => callbacks.current.onError(message), selectedForm.current);
         if (disposed) { engine.dispose(); return; }
         renderer.current = engine;
+        engine.setForm(selectedForm.current);
         audio.current = new WallpaperAudio(data.sounds || [], audioSettings.current, undefined, replacement.current, sceneAudioCache(controller.signal));
         activateWallpaperAudio(audio.current);
         engine.setAudio(audio.current);

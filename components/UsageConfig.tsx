@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Loader2, RefreshCw } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import type {
+  ModelUsageSummary,
   UsageBreakdownView,
   UsageGranularity,
   UsageMetricView,
@@ -11,6 +12,7 @@ import type {
   UsageTimeRange,
 } from "@/lib/usage-types";
 import { Select } from "./ui/field";
+import { formatGenerationSpeed, generationSpeedTier } from "@/lib/generation-speed";
 
 function formatTokens(count: number): string {
   if (count == null || isNaN(count) || count === 0) return "0";
@@ -1018,13 +1020,14 @@ export function UsageConfig() {
                   <th style={{ padding: "6px 8px", fontWeight: 500, textAlign: "right" }}>{t("usageConfig.cost")}</th>
                   <th style={{ padding: "6px 8px", fontWeight: 500, textAlign: "right" }}>{t("usageConfig.share")}</th>
                   <th style={{ padding: "6px 4px", fontWeight: 500, textAlign: "right" }}>{t("usageConfig.tokens")}</th>
+                  {breakdownView === "model" && <th style={{ padding: "6px 4px 6px 8px", fontWeight: 500, textAlign: "right" }}>{t("usageConfig.speed")}</th>}
                 </tr>
               </thead>
               <tbody>
                 {breakdownView === "model" &&
                   (modelBreakdown.length === 0 ? (
                     <tr>
-                      <td colSpan={4} style={{ padding: "16px 4px", textAlign: "center", color: "var(--text-dim)" }}>
+                      <td colSpan={5} style={{ padding: "16px 4px", textAlign: "center", color: "var(--text-dim)" }}>
                         {t("usageConfig.emptyTitle")}
                       </td>
                     </tr>
@@ -1048,6 +1051,7 @@ export function UsageConfig() {
                         <td style={{ padding: "6px 4px", textAlign: "right", color: "var(--text-muted)" }}>
                           {formatTokens(m.tokens)}
                         </td>
+                        <ModelSpeedCell model={m} />
                       </tr>
                     ))
                   ))}
@@ -1182,5 +1186,30 @@ export function UsageConfig() {
         </div>
       )}
     </div>
+  );
+}
+
+const speedText = (rate: number | null) => {
+  const speed = formatGenerationSpeed(rate);
+  return speed ? `${speed.value} ${speed.unit}` : "—";
+};
+
+/** Mean output t/s of a model's timed requests; the tooltip carries the other speed figures. */
+function ModelSpeedCell({ model }: { model: ModelUsageSummary }) {
+  const { t } = useI18n();
+  const title = model.speedSamples > 0
+    ? t("usageConfig.speedHint", {
+      count: model.speedSamples,
+      mean: speedText(model.meanTps),
+      weighted: speedText(model.tokenWeightedTps),
+      decode: speedText(model.meanDecodeTps),
+      ttft: model.meanTtftMs === null ? "—" : `${(model.meanTtftMs / 1000).toFixed(1)} s`,
+    })
+    : t("usageConfig.speedNone");
+  const tier = model.meanTps === null ? null : generationSpeedTier(model.meanTps);
+  return (
+    <td title={title} style={{ padding: "6px 4px 6px 8px", textAlign: "right", whiteSpace: "nowrap", fontVariantNumeric: "tabular-nums", color: tier ? `var(--status-${tier})` : "var(--text-dim)" }}>
+      {speedText(model.meanTps)}
+    </td>
   );
 }

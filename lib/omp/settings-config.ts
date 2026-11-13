@@ -11,9 +11,9 @@ export type NativeSettings = {
   textVerbosity?: "low" | "medium" | "high";
   personality?: "default" | "friendly" | "pragmatic" | "none";
   advisor?: { enabled?: boolean; subagents?: boolean; syncBacklog?: "off" | "1" | "3" | "5"; immuneTurns?: number };
+  task?: { maxRecursionDepth?: number; maxConcurrency?: number };
   tools?: { approvalMode?: "always-ask" | "write" | "yolo"; approval?: { bash?: "allow" | "prompt" | "deny"; extension?: "allow" | "prompt" } };
   enabledModels?: string[];
-  disabledProviders?: string[];
   modelProviderOrder?: string[];
   registryHasScopedEntries?: boolean;
   retry?: {
@@ -59,6 +59,15 @@ function assertOptionalBoolean(value: unknown, name: string): void {
   if (value !== undefined && typeof value !== "boolean") throw new Error(`${name} must be a boolean`);
 }
 
+function validateTaskLimits(task: Record<string, unknown>): void {
+  for (const [key, minimum] of [["maxRecursionDepth", -1], ["maxConcurrency", 0]] as const) {
+    const value = task[key];
+    if (value !== undefined && (typeof value !== "number" || !Number.isSafeInteger(value) || value < minimum)) {
+      throw new Error(`task.${key} must be an integer of at least ${minimum}`);
+    }
+  }
+}
+
 function readDocument() {
   const path = configPath();
   const doc = parseDocument(existsSync(path) ? readFileSync(path, "utf8") : "");
@@ -72,6 +81,8 @@ export function readNativeSettings(): { path: string; settings: NativeSettings }
   const data = doc.toJS();
   if (!isRecord(data)) return { path, settings: {} };
   const advisor = isRecord(data.advisor) ? data.advisor : {};
+  const task = isRecord(data.task) ? data.task : {};
+  validateTaskLimits(task);
   const tools = isRecord(data.tools) ? data.tools : {};
   const approval = isRecord(tools.approval) ? tools.approval : {};
   const retry = isRecord(data.retry) ? data.retry : {};
@@ -84,7 +95,7 @@ export function readNativeSettings(): { path: string; settings: NativeSettings }
   const mnemopi = isRecord(data.mnemopi) ? data.mnemopi : {};
   const mcp = isRecord(data.mcp) ? data.mcp : {};
   const generateImage = isRecord(data.generate_image) ? data.generate_image : {};
-  const registryHasScopedEntries = [data.enabledModels, data.disabledProviders, data.modelProviderOrder]
+  const registryHasScopedEntries = [data.enabledModels, data.modelProviderOrder]
     .some((value) => Array.isArray(value) && !value.every((item) => typeof item === "string"));
   return {
     path,
@@ -94,6 +105,10 @@ export function readNativeSettings(): { path: string; settings: NativeSettings }
       ...(typeof data.externalThinking === "boolean" ? { externalThinking: data.externalThinking } : {}),
       ...(TEXT_VERBOSITIES.has(data.textVerbosity as string) ? { textVerbosity: data.textVerbosity as NativeSettings["textVerbosity"] } : {}),
       ...(PERSONALITIES.has(data.personality as string) ? { personality: data.personality as NativeSettings["personality"] } : {}),
+      ...(Object.keys(task).length ? { task: {
+        ...(typeof task.maxRecursionDepth === "number" ? { maxRecursionDepth: task.maxRecursionDepth } : {}),
+        ...(typeof task.maxConcurrency === "number" ? { maxConcurrency: task.maxConcurrency } : {}),
+      } } : {}),
       ...(Object.keys(advisor).length ? {
         advisor: {
           ...(typeof advisor.enabled === "boolean" ? { enabled: advisor.enabled } : {}),
@@ -110,7 +125,6 @@ export function readNativeSettings(): { path: string; settings: NativeSettings }
         } } : {}),
       } } : {}),
       ...(stringArray(data.enabledModels) ? { enabledModels: stringArray(data.enabledModels) } : {}),
-      ...(stringArray(data.disabledProviders) ? { disabledProviders: stringArray(data.disabledProviders) } : {}),
       ...(stringArray(data.modelProviderOrder) ? { modelProviderOrder: stringArray(data.modelProviderOrder) } : {}),
       ...(registryHasScopedEntries ? { registryHasScopedEntries: true } : {}),
       ...(Object.keys(retry).length ? { retry: {
@@ -155,6 +169,11 @@ export function readNativeSettings(): { path: string; settings: NativeSettings }
 export function writeNativeSettings(settings: NativeSettings): void {
   if (!isRecord(settings)) throw new Error("Settings must be an object");
   assertOptionalRecord(settings.advisor, "advisor");
+  assertOptionalRecord(settings.task, "task");
+  validateTaskLimits(settings.task ?? {});
+  if (Object.keys(settings.task ?? {}).some((key) => key !== "maxRecursionDepth" && key !== "maxConcurrency")) {
+    throw new Error("Unsupported task setting");
+  }
   assertOptionalRecord(settings.tools, "tools");
   assertOptionalRecord(settings.tools?.approval, "tools.approval");
   assertOptionalRecord(settings.retry, "retry");
@@ -206,7 +225,7 @@ export function writeNativeSettings(settings: NativeSettings): void {
   if (settings.autolearn?.minToolCalls !== undefined && (!Number.isInteger(settings.autolearn.minToolCalls) || settings.autolearn.minToolCalls < 0 || settings.autolearn.minToolCalls > 100)) throw new Error("Auto-learn minimum tool calls must be an integer between 0 and 100");
   if (settings.mnemopi?.scoping !== undefined && !MEMORY_SCOPES.has(settings.mnemopi.scoping)) throw new Error("Invalid Mnemopi memory scope");
   if (settings.mcp?.notificationDebounceMs !== undefined && (!Number.isInteger(settings.mcp.notificationDebounceMs) || settings.mcp.notificationDebounceMs < 0 || settings.mcp.notificationDebounceMs > 60_000)) throw new Error("MCP notification debounce must be an integer between 0 and 60,000");
-  for (const [key, values] of Object.entries({ enabledModels: settings.enabledModels, disabledProviders: settings.disabledProviders, modelProviderOrder: settings.modelProviderOrder })) {
+  for (const [key, values] of Object.entries({ enabledModels: settings.enabledModels, modelProviderOrder: settings.modelProviderOrder })) {
     if (values !== undefined && (!Array.isArray(values) || values.some((value) => typeof value !== "string" || !value.trim()))) throw new Error(`${key} must contain non-empty strings`);
   }
 
@@ -225,11 +244,13 @@ export function writeNativeSettings(settings: NativeSettings): void {
   if (settings.textVerbosity !== undefined) doc.set("textVerbosity", settings.textVerbosity);
   if (settings.personality !== undefined) doc.set("personality", settings.personality);
   for (const [key, value] of Object.entries(settings.advisor ?? {})) doc.setIn(["advisor", key], value);
+  for (const key of ["maxRecursionDepth", "maxConcurrency"] as const) {
+    if (settings.task?.[key] !== undefined) doc.setIn(["task", key], settings.task[key]);
+  }
   if (settings.tools?.approvalMode !== undefined) doc.setIn(["tools", "approvalMode"], settings.tools.approvalMode);
   if (settings.tools?.approval?.bash !== undefined) doc.setIn(["tools", "approval", "bash"], settings.tools.approval.bash);
   if (settings.tools?.approval?.extension !== undefined) doc.setIn(["tools", "approval", "extension"], settings.tools.approval.extension);
   if (settings.enabledModels !== undefined) doc.set("enabledModels", settings.enabledModels);
-  if (settings.disabledProviders !== undefined) doc.set("disabledProviders", settings.disabledProviders);
   if (settings.modelProviderOrder !== undefined) doc.set("modelProviderOrder", settings.modelProviderOrder);
   for (const [key, value] of Object.entries(settings.retry ?? {})) doc.setIn(["retry", key], value);
   for (const [key, value] of Object.entries(settings.compaction ?? {})) doc.setIn(["compaction", key], value);

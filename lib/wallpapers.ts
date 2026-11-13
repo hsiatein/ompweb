@@ -36,6 +36,7 @@ export interface WallpaperPreferences {
   libraryOrientation: WallpaperOrientation;
   librarySort: WallpaperSort;
   libraryKind: WallpaperKindFilter;
+  sceneForms: Record<string, string>;
 }
 export function parseWallpaperPreferences(raw: string | null): WallpaperPreferences {
   let v: Partial<WallpaperPreferences> = {};
@@ -60,6 +61,9 @@ export function parseWallpaperPreferences(raw: string | null): WallpaperPreferen
     libraryOrientation: ["all", "landscape", "portrait", "square", "unknown"].includes(v.libraryOrientation || "") ? v.libraryOrientation! : "auto",
     librarySort: ["added-asc", "modified-desc", "modified-asc", "name-asc", "name-desc"].includes(v.librarySort || "") ? v.librarySort! : "added-desc",
     libraryKind: ["image", "video", "scene", "web", "unsupported"].includes(v.libraryKind || "") ? v.libraryKind! : "all",
+    sceneForms: v.sceneForms && typeof v.sceneForms === "object" && !Array.isArray(v.sceneForms)
+      ? Object.fromEntries(Object.entries(v.sceneForms).filter(([id, form]) => /^[a-f0-9]{32}$/.test(id) && typeof form === "string" && /^[a-f0-9]{16}:(base|xray)$/.test(form)).slice(-256))
+      : {},
   };
 }
 export function wallpaperUrl(id: string, preview = false) {

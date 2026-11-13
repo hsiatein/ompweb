@@ -41,9 +41,7 @@ const manager = Toast.createToastManager<ToastData>();
 
 function add(kind: ToastKind, title: React.ReactNode, description?: React.ReactNode, options?: ToastOptions) {
   const timeout = options?.timeout ?? options?.duration;
-  // Base UI ToastManager types don't expose per-toast timeout, but the runtime respects it.
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (manager as any).add({
+  return manager.add({
     id: options?.id,
     title,
     description,

@@ -26,6 +26,10 @@ export interface UsageRecord {
   cost: number;         // USD
   cacheSavings: number; // USD
   costQuality: CostQualityTier;
+  /** omp's request duration (ms) when it recorded one and the request produced output; drives speed stats. */
+  durationMs: number | null;
+  /** Time to first token (ms) when omp recorded it. */
+  ttftMs: number | null;
 }
 
 export interface UsageSummary {
@@ -68,6 +72,16 @@ export interface ModelUsageSummary {
   reasoningTokens: number;
   share: number; // 0-100 percentage
   recordsCount: number;
+  /** Requests with a recorded duration (the speed figures below are null without any). */
+  speedSamples: number;
+  /** Mean of per-request output t/s (output tokens / request duration), like the top-bar speed chart. */
+  meanTps: number | null;
+  /** Total output tokens / total request time: long answers weigh more. */
+  tokenWeightedTps: number | null;
+  /** Mean t/s after the first token arrived (requests with a recorded TTFT). */
+  meanDecodeTps: number | null;
+  /** Mean time to first token (ms). */
+  meanTtftMs: number | null;
 }
 
 export interface TimeSeriesPoint {

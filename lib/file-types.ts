@@ -1,4 +1,9 @@
-export const TEXT_PREVIEW_MAX_BYTES = 256 * 1024;
+/** Text files up to this size load automatically and can be edited. */
+export const TEXT_PREVIEW_MAX_BYTES = 2 * 1024 * 1024;
+/** Larger text files load only on request (`force=1`), read-only, up to this size. */
+export const TEXT_PREVIEW_FORCE_MAX_BYTES = 50 * 1024 * 1024;
+/** Above this the viewer shows plain text instead of syntax highlighting (it would stall the page). */
+export const TEXT_HIGHLIGHT_MAX_BYTES = 512 * 1024;
 export const IMAGE_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 export const DOCX_PREVIEW_MAX_BYTES = 10 * 1024 * 1024;
 
@@ -26,7 +31,16 @@ export const AUDIO_EXT_TO_MIME: Record<string, string> = {
   aac: "audio/aac",
   flac: "audio/flac",
   weba: "audio/webm",
-  webm: "audio/webm",
+};
+
+/** Containers browsers can play in <video>; codecs inside may still be unsupported (the viewer then offers a download). */
+export const VIDEO_EXT_TO_MIME: Record<string, string> = {
+  mp4: "video/mp4",
+  m4v: "video/mp4",
+  mov: "video/quicktime",
+  webm: "video/webm",
+  ogv: "video/ogg",
+  mkv: "video/x-matroska",
 };
 
 export const DOCUMENT_EXT_TO_MIME: Record<DocumentPreviewKind, string> = {
@@ -79,6 +93,37 @@ export function getStreamSecurityHeaders(contentType: string): Record<string, st
 
 export function isImagePath(filePath: string): boolean {
   return getImageMime(filePath) !== null;
+}
+
+export function getVideoMime(filePath: string): string | null {
+  return VIDEO_EXT_TO_MIME[getFileExt(filePath)] ?? null;
+}
+
+export function isVideoPath(filePath: string): boolean {
+  return getVideoMime(filePath) !== null;
+}
+
+/** Bytes inspected to tell text from binary before a text preview is sent. */
+export const BINARY_SNIFF_BYTES = 8192;
+
+/**
+ * Whether a file sample is binary: it contains NUL, or it is not UTF-8. When the sample is
+ * only the start of the file (`truncated`), a multi-byte character cut at the end is allowed.
+ * UTF-16 text (which contains NULs) counts as binary; the viewer offers it as a download.
+ */
+export function looksBinary(sample: Uint8Array, truncated: boolean): boolean {
+  if (sample.includes(0)) return true;
+  const decoder = new TextDecoder("utf-8", { fatal: true });
+  // Up to 3 trailing bytes may be the start of a character cut off by the sample end.
+  for (let cut = 0; cut <= Math.min(truncated ? 3 : 0, sample.length); cut++) {
+    try {
+      decoder.decode(sample.subarray(0, sample.length - cut));
+      return false;
+    } catch {
+      // Try with one more trailing byte dropped.
+    }
+  }
+  return true;
 }
 
 export function isAudioPath(filePath: string): boolean {

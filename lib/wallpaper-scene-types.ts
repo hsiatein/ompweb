@@ -47,6 +47,7 @@ export interface SceneText {
 export interface SceneTexture { key: string; url: string; mimeType?: string; width: number; height: number; format: number; frames: { x: number; y: number; width: number; height: number; duration: number; axes?: number[] }[]; }
 export interface ScenePass {
   vertex: string; fragment: string; uniforms: Record<string, number | number[]>;
+  xray?: boolean;
   scripts?: ScenePropertyScript[];
   textures: (string | null)[]; repeats: number[];
   inputs?: Record<number, number>;
@@ -81,6 +82,9 @@ export interface SceneParticles {
   refraction?: { texture?: string; amount: number };
   overbright?: number;
 }
+export interface SceneForm {
+  id: string; label: string; visibility: Record<number, boolean>; xray: 0 | 1;
+}
 export interface BrowserScene {
   version: 1; width: number; height: number; clearColor: number[];
   layers: SceneLayer[]; particles: SceneParticles[]; textures: SceneTexture[];
@@ -88,6 +92,7 @@ export interface BrowserScene {
   sounds?: SceneSound[];
   scriptTemplates?: Record<string, SceneLayer>;
   userProperties?: Record<string, string | number | boolean>;
+  forms?: SceneForm[];
   warnings?: string[];
   cameraEffects: { parallax: boolean; amount: number; delay: number; mouse: number; shake: boolean; amplitude: number; speed: number; roughness: number };
   bloom?: { strength: number; threshold: number };

@@ -35,7 +35,10 @@ test("assistant image URLs preserve the originating session across memoized mess
 
 test("failed local images show the server reason and an old failure cannot replace a newer image", async () => {
   const pending = [];
-  globalThis.fetch = (_url, options) => new Promise(resolve => pending.push({ resolve, options }));
+  // MarkdownBody also loads the home directory (for `~/` links); only image probes are held.
+  globalThis.fetch = (url, options) => String(url) === "/api/home"
+    ? Promise.resolve(Response.json({ home: "/home/me" }))
+    : new Promise(resolve => pending.push({ resolve, options }));
   const view = render(React.createElement(MarkdownBody, { sourceSessionId: sid }, "![old](/tmp/old.png)"));
   fireEvent.error(screen.getByAltText("old"));
   view.rerender(React.createElement(MarkdownBody, { sourceSessionId: sid }, "![new](/tmp/new.png)"));

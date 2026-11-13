@@ -7,7 +7,7 @@ import {
   DialogContent,
   DialogTitle,
 } from "@/components/ui/primitives";
-import { Plus, Trash2, ArrowDown, ArrowUp } from "lucide-react";
+import { Plus, Trash2, ArrowDown, ArrowUp, Check, Pencil, X } from "lucide-react";
 import { toast } from "@/components/ui/toast";
 import {
   NATIVE_MODEL_ROLES,
@@ -21,9 +21,10 @@ import {
   type RuntimeModelEntry,
 } from "./ModelsConfig-types";
 import { Select } from "./ui/field";
+import { ACCOUNT_ROUTING_CHANGED_EVENT, notifyAccountRoutingChanged } from "@/lib/account-choices";
+import { PROVIDER_ACCOUNT_ALIAS_MAX_LENGTH } from "@/lib/provider-usage-types";
 
-// Presentational panels extracted from ModelsConfig.tsx
-// (pure extraction, no behavior change).
+// Shared provider account and model settings panels.
 
 export function ModelsConfigSurface({ embedded, isMobile, onClose, children }: { embedded: boolean; isMobile: boolean; onClose: () => void; children: React.ReactNode }) {
   if (embedded) return <>{children}</>;
@@ -251,8 +252,7 @@ export function NativeRegistryDetail({ models, connectedProviders, onChanged }: 
   const allModelKeys = models.map((model) => `${model.provider}/${model.id}`);
   const allowListEnabled = (settings.enabledModels?.length ?? 0) > 0;
   const enabledModels = new Set(settings.enabledModels ?? allModelKeys);
-  const providers = [...new Set([...models.map((model) => model.provider), ...connectedProviders.map((provider) => provider.id), ...(settings.disabledProviders ?? [])])].sort();
-  const disabledProviders = new Set(settings.disabledProviders ?? []);
+  const providers = [...new Set([...models.map((model) => model.provider), ...connectedProviders.map((provider) => provider.id)])].sort();
   const providerOrder = settings.modelProviderOrder ?? [];
   const orderedProviders = [...providerOrder, ...providers.filter((provider) => !providerOrder.includes(provider))];
 
@@ -268,11 +268,6 @@ export function NativeRegistryDetail({ models, connectedProviders, onChanged }: 
         const key = `${model.provider}/${model.id}`;
         return <label key={key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", color: "var(--text-muted)", fontSize: 12 }}><input type="checkbox" checked={enabledModels.has(key)} disabled={saving || isReadOnly} onChange={(event) => { const next = new Set(enabledModels); if (event.target.checked) next.add(key); else next.delete(key); void save({ ...settings, enabledModels: [...next] }); }} /><code>{key}</code></label>;
       })}</div>}
-    </section>
-    <section style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-card)", overflow: "hidden" }}>
-      <div style={{ padding: "10px 12px", background: "var(--bg-panel)", color: "var(--text)", fontSize: 12, fontWeight: 600 }}>{t("modelsConfig.disabledProviders")}</div>
-      <p style={{ margin: 0, padding: "8px 12px", color: "var(--text-muted)", fontSize: 11, lineHeight: 1.45 }}>{t("modelsConfig.disabledProvidersDesc")}</p>
-      <div style={{ borderTop: "1px solid var(--border)" }}>{providers.map((provider) => <label key={provider} style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 12px", color: "var(--text-muted)", fontSize: 12 }}><input type="checkbox" checked={disabledProviders.has(provider)} disabled={saving || isReadOnly} onChange={(event) => { const next = new Set(disabledProviders); if (event.target.checked) next.add(provider); else next.delete(provider); void save({ ...settings, disabledProviders: [...next] }); }} /><ProviderIcon id={provider} size={14} /><code>{provider}</code></label>)}</div>
     </section>
     <section style={{ border: "1px solid var(--border)", borderRadius: "var(--radius-card)", overflow: "hidden" }}>
       <div style={{ padding: "10px 12px", background: "var(--bg-panel)", color: "var(--text)", fontSize: 12, fontWeight: 600 }}>{t("modelsConfig.providerPreference")}</div>
@@ -444,8 +439,8 @@ export function AddProviderPicker({
 
   const q = search.trim().toLowerCase();
 
-  const availableOAuth = oauthProviders.filter((p) => !p.loggedIn && (!q || p.name.toLowerCase().includes(q)));
-  const availableApiKey = apiKeyProviders.filter((p) => !p.configured && (!q || p.displayName.toLowerCase().includes(q) || p.id.toLowerCase().includes(q)));
+  const availableOAuth = oauthProviders.filter((p) => !q || p.name.toLowerCase().includes(q));
+  const availableApiKey = apiKeyProviders.filter((p) => !q || p.displayName.toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
   const showCustom = !q || "custom".includes(q);
 
   const totalCount = availableOAuth.length + availableApiKey.length + (showCustom ? 1 : 0);
@@ -569,4 +564,238 @@ export function AddProviderPicker({
       </DialogContent>
     </Dialog>
   );
+}
+
+const aliasIconButtonStyle = {
+  display: "flex",
+  alignItems: "center",
+  justifyContent: "center",
+  width: 32,
+  height: 32,
+  flexShrink: 0,
+  padding: 0,
+  background: "none",
+  border: "1px solid var(--border)",
+  borderRadius: "var(--radius-control)",
+  color: "var(--text-muted)",
+  cursor: "pointer",
+} as const;
+
+// Names an account so several logins of one provider are told apart. Saved
+// server-side (omp-web-settings.json) so every browser sees the same names.
+function AccountAliasEditor({ accountKey, alias, onSaved, t }: {
+  accountKey: string;
+  alias: string | undefined;
+  onSaved: (accountKey: string, alias: string | null) => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    if (draft === null || saving) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/provider-usage/aliases", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accountKey, alias: draft }),
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const saved = await response.json() as { alias: string | null };
+      onSaved(accountKey, saved.alias);
+      setDraft(null);
+    } catch {
+      toast.error(t("providerUsage.aliasSaveFailed"));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (draft === null) {
+    return (
+      <span style={{ display: "flex", alignItems: "center", minWidth: 0 }}>
+        <button
+          type="button"
+          onClick={() => setDraft(alias ?? "")}
+          className="settings-back"
+          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: "var(--text-sm)" }}
+        >
+          <Pencil size={13} strokeWidth={2} aria-hidden="true" />
+          {t(alias ? "providerUsage.aliasEdit" : "providerUsage.aliasSet")}
+        </button>
+      </span>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={(event) => {
+        event.preventDefault();
+        void save();
+      }}
+      style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}
+    >
+      <input
+        className="wallpaper-inset"
+        autoFocus
+        value={draft}
+        maxLength={PROVIDER_ACCOUNT_ALIAS_MAX_LENGTH}
+        disabled={saving}
+        placeholder={t("providerUsage.aliasPlaceholder")}
+        aria-label={t("providerUsage.aliasSet")}
+        onChange={(event) => setDraft(event.target.value)}
+        onKeyDown={(event) => {
+          if (event.key !== "Escape") return;
+          event.preventDefault();
+          event.stopPropagation();
+          setDraft(null);
+        }}
+        style={{
+          flex: 1,
+          minWidth: 0,
+          height: "var(--control-height)",
+          boxSizing: "border-box",
+          padding: "0 var(--control-padding-inline)",
+          fontSize: "var(--text-sm)",
+          fontFamily: "inherit",
+          color: "var(--text)",
+          background: "var(--bg)",
+          border: "1px solid var(--accent)",
+          borderRadius: "var(--radius-control)",
+          outline: "none",
+        }}
+      />
+      <button type="submit" disabled={saving} aria-label={t("providerUsage.aliasSave")} title={t("providerUsage.aliasSave")} style={aliasIconButtonStyle}>
+        <Check size={12} strokeWidth={2} aria-hidden="true" />
+      </button>
+      <button type="button" disabled={saving} onClick={() => setDraft(null)} aria-label={t("providerUsage.aliasCancel")} title={t("providerUsage.aliasCancel")} style={aliasIconButtonStyle}>
+        <X size={12} strokeWidth={2} aria-hidden="true" />
+      </button>
+    </form>
+  );
+}
+
+type ProxyStatus = { configured: boolean; address?: string; authenticated?: boolean };
+type ProxyAccount = { key: string; accountKey: string; accountAlias?: string; accountName?: string; proxy: ProxyStatus };
+
+function AccountProxyEditor({ provider, account, disabled, onSaved }: {
+  provider: string;
+  account: ProxyAccount;
+  disabled: boolean;
+  onSaved: (proxy: ProxyStatus) => void;
+}) {
+  const { t } = useI18n();
+  const [draft, setDraft] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const save = async () => {
+    if (draft === null || saving) return;
+    setSaving(true);
+    try {
+      const response = await fetch("/api/provider-usage/proxies", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ provider, key: account.key, url: draft }),
+      });
+      const result = await response.json() as { proxy: ProxyStatus; code?: string };
+      if (!response.ok) {
+        toast.error(t(result.code === "invalid_proxy_url" ? "providerUsage.proxyInvalid" : result.code === "runtime_upgrade_required" ? "providerUsage.proxyRuntimeRequired" : "providerUsage.proxySaveFailed"));
+        return;
+      }
+      onSaved(result.proxy);
+      setDraft(null);
+      notifyAccountRoutingChanged();
+    } catch {
+      toast.error(t("providerUsage.proxySaveFailed"));
+    } finally { setSaving(false); }
+  };
+
+  return <div style={{ display: "flex", flexDirection: "column", gap: 8, minWidth: 0 }}>
+    <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 8, minWidth: 0 }}>
+      <span style={{ color: "var(--text-muted)", fontSize: "var(--text-sm)", overflowWrap: "anywhere" }}>
+        {account.proxy.configured ? account.proxy.address : t("providerUsage.proxyDefault")}
+        {account.proxy.authenticated && ` · ${t("providerUsage.proxyAuthenticated")}`}
+      </span>
+      {/* Start from the saved address so a port or host change is a small edit. The server never
+          returns proxy credentials, so an authenticated proxy starts empty instead of losing them. */}
+      {draft === null && <button type="button" className="settings-back" disabled={disabled} onClick={() => setDraft(account.proxy.configured && !account.proxy.authenticated ? account.proxy.address ?? "" : "")} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <Pencil size={13} aria-hidden="true" />{t(account.proxy.configured ? "providerUsage.proxyEdit" : "providerUsage.proxySet")}
+      </button>}
+    </div>
+    {draft !== null && <form onSubmit={event => { event.preventDefault(); void save(); }} style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}>
+      <input
+        type="text" inputMode="url" autoComplete="off" autoCapitalize="off" spellCheck={false} autoFocus
+        className="wallpaper-inset" value={draft} maxLength={2048} disabled={saving || disabled}
+        aria-label={t("providerUsage.proxyAddress")} placeholder={t("providerUsage.proxyPlaceholder")}
+        onChange={event => setDraft(event.target.value)}
+        onKeyDown={event => {
+          if (event.key !== "Escape") return;
+          event.preventDefault(); event.stopPropagation();
+          if (!saving) setDraft(null);
+        }}
+        style={{ flex: 1, minWidth: 0, height: "var(--control-height)", boxSizing: "border-box", padding: "0 var(--control-padding-inline)", font: "inherit", color: "var(--text)", background: "var(--bg)", border: "1px solid var(--accent)", borderRadius: "var(--radius-control)" }}
+      />
+      <button type="submit" disabled={saving || disabled} style={aliasIconButtonStyle} aria-label={t("providerUsage.proxySave")} title={t("providerUsage.proxySave")}><Check size={12} aria-hidden="true" /></button>
+      <button type="button" disabled={saving} onClick={() => setDraft(null)} style={aliasIconButtonStyle} aria-label={t("providerUsage.aliasCancel")} title={t("providerUsage.aliasCancel")}><X size={12} aria-hidden="true" /></button>
+    </form>}
+  </div>;
+}
+
+/** Per-account preferences for the provider selected from Connected accounts. */
+export function ProviderAccountSettings({ provider }: { provider: string }) {
+  const { t } = useI18n();
+  const [data, setData] = useState<{ accounts: ProxyAccount[]; runtimeReady: boolean } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [revision, setRevision] = useState(0);
+  const refresh = () => { setError(null); setRevision(value => value + 1); };
+  useEffect(() => {
+    const controller = new AbortController();
+    void fetch(`/api/provider-usage/proxies?provider=${encodeURIComponent(provider)}`, { signal: controller.signal, cache: "no-store" })
+      .then(async response => {
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.code === "runtime_upgrade_required" ? "providerUsage.proxyRuntimeRequired" : "providerUsage.accountsLoadFailed");
+        return result;
+      })
+      .then(result => { setData(result); setError(null); })
+      .catch(error => { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : "providerUsage.accountsLoadFailed"); });
+    return () => controller.abort();
+  }, [provider, revision]);
+  useEffect(() => {
+    const changed = () => setRevision(value => value + 1);
+    const storage = (event: StorageEvent) => { if (event.key === ACCOUNT_ROUTING_CHANGED_EVENT) changed(); };
+    window.addEventListener(ACCOUNT_ROUTING_CHANGED_EVENT, changed);
+    window.addEventListener("storage", storage);
+    return () => { window.removeEventListener(ACCOUNT_ROUTING_CHANGED_EVENT, changed); window.removeEventListener("storage", storage); };
+  }, []);
+
+  if (error) {
+    return <div role="alert" style={{ display: "flex", alignItems: "center", gap: 12, color: "var(--text-muted)" }}>
+      <span>{t(error.startsWith("providerUsage.") ? error : "providerUsage.accountsLoadFailed")}</span>
+      <button type="button" className="settings-back" onClick={refresh}>{t("modelsConfig.reload")}</button>
+    </div>;
+  }
+  if (!data) return <div role="status">{t("modelsConfig.loading")}</div>;
+  if (data.accounts.length === 0) return <div style={{ color: "var(--text-muted)" }}>{t("providerUsage.noAccounts")}</div>;
+
+  return <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+    {!data.runtimeReady && <div role="alert" style={{ color: "var(--text-muted)" }}>{t("providerUsage.proxyRuntimeRequired")}</div>}
+    {data.accounts.map((account, index) => (
+      <div key={account.key} className="provider-grid-card" style={{ minHeight: 0, gap: 10 }}>
+        <span style={{ display: "flex", flexDirection: "column", gap: 2, minWidth: 0 }}>
+          <span style={{ fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text)", overflowWrap: "anywhere" }}>
+            {account.accountAlias ?? account.accountName ?? t("appShell.account", { number: index + 1 })}
+          </span>
+          {account.accountAlias && account.accountName && (
+            <span style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)", overflowWrap: "anywhere" }}>{account.accountName}</span>
+          )}
+        </span>
+        <AccountAliasEditor accountKey={account.accountKey} alias={account.accountAlias} onSaved={(accountKey, alias) => {
+          setData(current => current && ({ ...current, accounts: current.accounts.map(row => row.accountKey === accountKey ? { ...row, accountAlias: alias ?? undefined } : row) }));
+          notifyAccountRoutingChanged();
+        }} t={t} />
+        <AccountProxyEditor provider={provider} account={account} disabled={!data.runtimeReady} onSaved={proxy => {
+          setData(current => current && ({ ...current, accounts: current.accounts.map(row => row.key === account.key ? { ...row, proxy } : row) }));
+        }} />
+      </div>
+    ))}
+  </div>;
 }

@@ -4,20 +4,25 @@ import { getAgentDir } from "./omp/paths";
 import { PROVIDER_ACCOUNT_ALIAS_MAX_LENGTH, PROVIDER_ACCOUNT_KEY_RE } from "./provider-usage-types";
 import { isRecord } from "./type-guards";
 import { DEFAULT_MEMORY_GUARD, parseMemoryGuardSettings, type MemoryGuardSettings } from "./memory-guard-settings";
+import { WEB_PLUGIN_ID_RE } from "./web-plugin-types";
 
 /** omp-web's own server-side settings (omp's config.yml stays omp's). */
 export interface WebServerSettings {
   /** Resume sessions that were mid-run when omp-web stopped. */
   autoResumeSessions: boolean;
+  /** Allow delegation in newly started OMP processes. */
+  subagentsEnabled: boolean;
   /** User-assigned provider account names, keyed by `ProviderUsageReport.accountKey`. */
   accountAliases: Record<string, string>;
   /** Directory picker shortcuts (jump targets), in the user's order. */
   favoriteDirectories: string[];
   /** Kills runaway agent/terminal commands before the system runs out of memory. */
   memoryGuard: MemoryGuardSettings;
+  /** Web plugins (`<agent dir>/web-plugins/<id>`) the user switched on. */
+  enabledPlugins: string[];
 }
 
-const DEFAULTS: WebServerSettings = { autoResumeSessions: false, accountAliases: {}, favoriteDirectories: [], memoryGuard: DEFAULT_MEMORY_GUARD };
+const DEFAULTS: WebServerSettings = { autoResumeSessions: false, subagentsEnabled: false, accountAliases: {}, favoriteDirectories: [], memoryGuard: DEFAULT_MEMORY_GUARD, enabledPlugins: [] };
 
 export const MAX_FAVORITE_DIRECTORIES = 50;
 const MAX_FAVORITE_PATH_LENGTH = 4096;
@@ -68,8 +73,12 @@ export function loadWebServerSettings(): WebServerSettings {
       if (isRecord(raw)) {
         settings = {
           autoResumeSessions: raw.autoResumeSessions === true,
+          subagentsEnabled: raw.subagentsEnabled === true,
           accountAliases: readAccountAliases(raw.accountAliases),
           favoriteDirectories: parseFavoriteDirectories(raw.favoriteDirectories) ?? [],
+          enabledPlugins: Array.isArray(raw.enabledPlugins)
+            ? [...new Set(raw.enabledPlugins.filter((id): id is string => typeof id === "string" && WEB_PLUGIN_ID_RE.test(id)))]
+            : [],
           memoryGuard: parseMemoryGuardSettings(raw.memoryGuard),
         };
       }

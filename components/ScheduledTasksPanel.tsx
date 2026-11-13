@@ -1,19 +1,27 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowLeft, CalendarClock, Copy, MessageSquare, Pencil, Play, Plus, RefreshCw, SquarePlus, Trash2, X } from "lucide-react";
-import { Alert, Autocomplete, Check, ConfirmDialog, Field, NumInput, Select, TextInput } from "@/components/ui/field";
-import { Dialog, DialogContent, DialogTitle, Tooltip } from "@/components/ui/primitives";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
+import { ArrowLeft, CalendarClock, Check as CheckIcon, ChevronDown, Copy, Cpu, KeyRound, MessageSquare, Pencil, Play, Plus, RefreshCw, SquarePlus, Trash2, X } from "lucide-react";
+import { Alert, Check, ConfirmDialog, Field, NumInput, Select, TextInput } from "@/components/ui/field";
+import { Dialog, DialogContent, DialogTitle, InfoHint, Tooltip } from "@/components/ui/primitives";
 import { toast } from "@/components/ui/toast";
 import { useI18n } from "@/lib/i18n";
 import { copyText } from "@/lib/clipboard";
 import { formatApiError } from "@/lib/i18n/api-error";
-import { MIN_INTERVAL_MINUTES, type ScheduleRepeat } from "@/lib/schedule-recurrence";
-import type { ScheduledTaskRunView, ScheduledTaskView } from "@/lib/scheduled-tasks";
+import { DEFAULT_WEBHOOK_LISTEN_PORT, MIN_INTERVAL_MINUTES, type ScheduleRepeat } from "@/lib/schedule-recurrence";
+import type { ScheduledTaskRunView, ScheduledTaskView, WebhookEndpointView } from "@/lib/scheduled-tasks";
+import type { NetworkInterfaceInfo } from "@/lib/webhook-listeners";
 import { SCHEDULED_TASKS_OPEN_EVENT } from "@/lib/scheduled-tasks-ui";
 import { selectableThinkingLevels } from "@/lib/thinking-levels";
-import type { SessionInfo } from "@/lib/types";
+import type { ManagedProject, SessionInfo } from "@/lib/types";
+import { sortManagedProjects } from "@/lib/project-ordering";
+import { workspaceSelectOptions } from "./AppShell-layout";
+import { DirectoryPicker } from "./DirectoryPicker";
+import { COMPOSER_MODELS_STORAGE_KEY, compareModelOptions, filterModelOptions, readVisibleModelKeys, type ModelOption } from "./ChatInput-model-options";
+import { ModelPickerPanel } from "./ChatInput-model-picker";
 import "./scheduled-tasks.css";
+
+const NO_WORKSPACE = "\u0000no-workspace";
 
 type T = (key: string, vars?: Record<string, string | number>) => string;
 
@@ -116,6 +124,10 @@ interface Draft {
   maxRunMinutes: string;
   enabled: boolean;
   webhookIncludeBody: boolean;
+  /** "server": omp-web's own URL; "dedicated": a listener on chosen interfaces. */
+  listenMode: "server" | "dedicated";
+  listenInterfaces: string[];
+  listenPort: string;
 }
 
 function draftFor(task: ScheduledTaskView | null, defaults: { cwd: string; sessionId: string | null }, sessions: SessionInfo[]): Draft {
@@ -143,6 +155,9 @@ function draftFor(task: ScheduledTaskView | null, defaults: { cwd: string; sessi
     maxRunMinutes: String(task?.maxRunMinutes ?? 60),
     enabled: task?.enabled ?? true,
     webhookIncludeBody: task?.webhookIncludeBody ?? false,
+    listenMode: task?.webhookListen ? "dedicated" : "server",
+    listenInterfaces: task?.webhookListen?.interfaces ?? [],
+    listenPort: String(task?.webhookListen?.port ?? DEFAULT_WEBHOOK_LISTEN_PORT),
   };
 }
 
@@ -165,7 +180,14 @@ function draftToInput(draft: Draft, t: T): Record<string, unknown> | string {
   } else {
     repeat = { kind: "webhook" };
   }
-  const common = { name: draft.name, message: draft.message, repeat, enabled: draft.enabled, advisor: draft.advisor, webhookIncludeBody: draft.webhookIncludeBody };
+  let webhookListen: { interfaces: string[]; port: number } | null = null;
+  if (draft.kind === "webhook" && draft.listenMode === "dedicated") {
+    const port = Number(draft.listenPort);
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return t("scheduledTasks.errorListenPort");
+    if (draft.listenInterfaces.length === 0) return t("scheduledTasks.errorListenInterfaces");
+    webhookListen = { interfaces: draft.listenInterfaces, port };
+  }
+  const common = { name: draft.name, message: draft.message, repeat, enabled: draft.enabled, advisor: draft.advisor, webhookIncludeBody: draft.webhookIncludeBody, webhookListen };
   if (draft.target === "session") {
     if (!draft.sessionId) return t("scheduledTasks.errorSession");
     return { ...common, targetSessionId: draft.sessionId };
@@ -182,26 +204,139 @@ function draftToInput(draft: Draft, t: T): Record<string, unknown> | string {
   };
 }
 
-function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
+/** The composer's model picker (same panel, same visible-model filter), plus
+ * a "default model" row: a task may leave the model to omp's default. */
+function TaskModelPicker({ models, value, onChange }: {
+  models: CatalogModel[];
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const { t, locale } = useI18n();
+  const [open, setOpen] = useState(false);
+  // Opens below the trigger, or above when the editor's scroll area has more room there.
+  const [placement, setPlacement] = useState<{ up: boolean; height: number }>({ up: false, height: 360 });
+  const [query, setQuery] = useState("");
+  const [visibleKeys, setVisibleKeys] = useState<Set<string> | null>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const panelId = useId();
+  useEffect(() => {
+    const refresh = () => setVisibleKeys(readVisibleModelKeys());
+    const fromStorage = (event: StorageEvent) => { if (event.key === null || event.key === COMPOSER_MODELS_STORAGE_KEY) refresh(); };
+    refresh();
+    window.addEventListener("omp-composer-models-change", refresh);
+    window.addEventListener("storage", fromStorage);
+    return () => {
+      window.removeEventListener("omp-composer-models-change", refresh);
+      window.removeEventListener("storage", fromStorage);
+    };
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    searchRef.current?.focus();
+    const onPointer = (event: PointerEvent) => { if (!rootRef.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener("pointerdown", onPointer);
+    return () => document.removeEventListener("pointerdown", onPointer);
+  }, [open]);
+  const collator = useMemo(() => new Intl.Collator(locale, { numeric: true, sensitivity: "base" }), [locale]);
+  const options: ModelOption[] = useMemo(() => models
+    .map((entry) => ({ provider: entry.provider, modelId: entry.id, name: entry.name ?? entry.id }))
+    .filter((option) => visibleKeys === null || visibleKeys.has(`${option.provider}:${option.modelId}`))
+    .sort((a, b) => compareModelOptions(collator, a, b)), [models, visibleKeys, collator]);
+  const filtered = useMemo(() => filterModelOptions(options, query, locale), [options, query, locale]);
+  const slash = value.indexOf("/");
+  const current = slash > 0 ? { provider: value.slice(0, slash), modelId: value.slice(slash + 1) } : null;
+  const currentEntry = current ? models.find((entry) => entry.provider === current.provider && entry.id === current.modelId) : undefined;
+  const label = current ? currentEntry?.name ?? current.modelId : t("scheduledTasks.defaultModel");
+  const close = () => { setOpen(false); setQuery(""); };
+  const toggle = () => {
+    if (open) { close(); return; }
+    const trigger = rootRef.current?.getBoundingClientRect();
+    const area = rootRef.current?.closest(".sched-main")?.getBoundingClientRect();
+    if (trigger && area) {
+      const below = area.bottom - trigger.bottom - 8;
+      const above = trigger.top - area.top - 8;
+      const up = below < 360 && above > below;
+      setPlacement({ up, height: Math.max(220, Math.min(360, up ? above : below)) });
+    }
+    setOpen(true);
+  };
+  return (
+    <div ref={rootRef} className="sched-model-picker" onKeyDown={(event) => { if (event.key === "Escape" && open) { event.stopPropagation(); close(); } }}>
+      <button type="button" className="sched-input sched-model-trigger" aria-haspopup="dialog" aria-expanded={open} aria-controls={panelId}
+        title={current ? `${current.provider} / ${current.modelId}` : undefined} onClick={toggle}>
+        <Cpu size={13} aria-hidden="true" />
+        <span className="sched-ellipsis">{label}</span>
+        {current && <span className="sched-model-provider">{current.provider}</span>}
+        <ChevronDown size={13} aria-hidden="true" style={{ marginLeft: "auto", transform: open ? "rotate(180deg)" : "none" }} />
+      </button>
+      {open && (
+        <div id={panelId} role="dialog" aria-label={t("chatInput.modelsLabel")} className="picker-panel sched-model-panel"
+          style={placement.up ? { bottom: "calc(100% + 4px)", height: placement.height } : { top: "calc(100% + 4px)", height: placement.height }}>
+          <button type="button" className="picker-row" data-active={!current} role="menuitemradio" aria-checked={!current} onClick={() => { onChange(""); close(); }}>
+            <span className="picker-check">{!current && <CheckIcon size={11} strokeWidth={2.4} aria-hidden="true" />}</span>
+            <span>{t("scheduledTasks.defaultModel")}</span>
+          </button>
+          <ModelPickerPanel
+            modelOptions={options}
+            filteredModelOptions={filtered}
+            currentModel={current}
+            modelSearchQuery={query}
+            onSearchQueryChange={setQuery}
+            searchInputRef={searchRef}
+            showModelsLoading={models.length === 0}
+            onSelectModel={(provider, modelId) => { onChange(`${provider}/${modelId}`); close(); }}
+            onClose={close}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
+function TaskEditor({ task, defaults, sessions, timeZone, interfaces, onCancel, onSaved }: {
   task: ScheduledTaskView | null;
   defaults: { cwd: string; sessionId: string | null };
   sessions: SessionInfo[];
+  timeZone: string | null;
+  interfaces: NetworkInterfaceInfo[];
   onCancel: () => void;
   onSaved: (task: ScheduledTaskView) => void;
 }) {
   const { t, locale } = useI18n();
   const [draft, setDraft] = useState(() => draftFor(task, defaults, sessions));
   const [models, setModels] = useState<CatalogModel[]>([]);
-  const [projects, setProjects] = useState<string[]>([]);
+  const [projects, setProjects] = useState<ManagedProject[]>([]);
+  const [addingWorkspace, setAddingWorkspace] = useState(false);
+  const [addWorkspaceBusy, setAddWorkspaceBusy] = useState(false);
+  const [addWorkspaceError, setAddWorkspaceError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const update = (patch: Partial<Draft>) => { setDraft((current) => ({ ...current, ...patch })); setError(null); };
 
+  const loadProjects = useCallback(() => request<{ projects?: (ManagedProject & { hidden?: boolean })[] }>("/api/projects")
+    .then((body) => setProjects(sortManagedProjects((body.projects ?? []).filter((project) => !project.hidden))), () => {}), []);
+  useEffect(() => { void loadProjects(); }, [loadProjects]);
+  // Same catalog the composer sees for this workspace.
+  const modelsCwd = draft.target === "new" ? draft.cwd : "";
   useEffect(() => {
-    void request<{ modelList?: CatalogModel[] }>("/api/models").then((body) => setModels(body.modelList ?? []), () => {});
-    void request<{ projects?: { path: string; hidden?: boolean }[] }>("/api/projects")
-      .then((body) => setProjects((body.projects ?? []).filter((project) => !project.hidden).map((project) => project.path)), () => {});
-  }, []);
+    void request<{ modelList?: CatalogModel[] }>(modelsCwd ? `/api/models?cwd=${encodeURIComponent(modelsCwd)}` : "/api/models")
+      .then((body) => setModels(body.modelList ?? []), () => {});
+  }, [modelsCwd]);
+  const addWorkspace = async (path: string, launchConfig?: ManagedProject["launchConfig"]) => {
+    setAddWorkspaceBusy(true);
+    setAddWorkspaceError(null);
+    try {
+      const body = await request<{ project?: ManagedProject }>("/api/projects", jsonInit("POST", { cwd: path, launchConfig }));
+      await loadProjects();
+      if (body.project) update({ cwd: body.project.path });
+      setAddingWorkspace(false);
+    } catch (addError) {
+      setAddWorkspaceError(addError instanceof Error ? addError.message : String(addError));
+    } finally {
+      setAddWorkspaceBusy(false);
+    }
+  };
 
   const selectedModel = models.find((entry) => `${entry.provider}/${entry.id}` === draft.model);
   const thinkingLevels = selectableThinkingLevels(selectedModel?.thinkingLevels ?? null);
@@ -244,10 +379,8 @@ function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
           <label key={target} className="sched-target-option" data-selected={draft.target === target}>
             <input type="radio" name="sched-target" checked={draft.target === target} onChange={() => update({ target })} />
             {target === "new" ? <SquarePlus size={15} aria-hidden="true" /> : <MessageSquare size={15} aria-hidden="true" />}
-            <span>
-              <strong>{t(target === "new" ? "scheduledTasks.targetNew" : "scheduledTasks.targetSession")}</strong>
-              <small>{t(target === "new" ? "scheduledTasks.targetNewHint" : "scheduledTasks.targetSessionHint")}</small>
-            </span>
+            <strong>{t(target === "new" ? "scheduledTasks.targetNew" : "scheduledTasks.targetSession")}</strong>
+            {target === "session" && <span className="hint-chip">{t("scheduledTasks.queuesWhenBusy")}</span>}
           </label>
         ))}
       </div>
@@ -289,8 +422,22 @@ function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
           </Field>
         </div>
       ) : (
-        <Field label={t("scheduledTasks.workspace")} hint={t("scheduledTasks.workspaceHint")} required>
-          <Autocomplete className="sched-input sched-mono" options={projects} value={draft.cwd} onChange={(cwd) => update({ cwd })} spellCheck={false} />
+        <Field label={t("scheduledTasks.workspace")} required>
+          <Select
+            className="sched-input"
+            // "" is the add-workspace entry, so an empty draft shows a separate prompt row.
+            value={draft.cwd || NO_WORKSPACE}
+            onChange={(cwd) => {
+              if (cwd === NO_WORKSPACE) return;
+              if (!cwd) { setAddingWorkspace(true); return; }
+              update({ cwd });
+            }}
+            options={[
+              ...(draft.cwd ? [] : [{ value: NO_WORKSPACE, label: t("scheduledTasks.pickWorkspace") }]),
+              ...workspaceSelectOptions(projects, draft.cwd, draft.cwd, <>+ {t("projects.add")}</>),
+            ]}
+          />
+          {draft.cwd && <span className="sched-mono sched-workspace-path" title={draft.cwd}>{draft.cwd}</span>}
         </Field>
       )}
       <Field label={t("scheduledTasks.prompt")} required>
@@ -339,6 +486,7 @@ function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
             <input className="sched-input" type="time" value={draft.time} onChange={(event) => update({ time: event.target.value })} />
           </Field>
         )}
+        {draft.kind !== "webhook" && <ScheduleZone timeZone={draft.kind === "interval" ? null : timeZone} />}
       </div>
       {draft.kind === "weekly" && (
         <div role="group" aria-label={t("scheduledTasks.days")} className="sched-days">
@@ -353,27 +501,17 @@ function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
         </div>
       )}
       {draft.kind === "webhook" && (
-        <div className="sched-note">
-          <p>{t(task?.webhookToken ? "scheduledTasks.webhookEditHint" : "scheduledTasks.webhookNewHint")}</p>
+        <>
           <Check label={t("scheduledTasks.webhookIncludeBody")} checked={draft.webhookIncludeBody} onChange={(webhookIncludeBody) => update({ webhookIncludeBody })} />
-        </div>
+          <WebhookListenEditor draft={draft} interfaces={interfaces} update={update} />
+        </>
       )}
+      {task?.webhookToken && draft.kind !== "webhook" && <Alert variant="warning" description={t("scheduledTasks.webhookWillRevoke")} />}
       {draft.target === "new" && (
         <>
           <div className="sched-row">
             <Field label={t("scheduledTasks.model")} style={{ flex: 2 }}>
-              <Select
-                className="sched-input"
-                value={draft.model}
-                onChange={(nextValue) => update({ model: nextValue, thinkingLevel: "" })}
-                options={[
-                  { value: "", label: t("scheduledTasks.defaultModel") },
-                  ...(draft.model && !selectedModel ? [{ value: draft.model, label: draft.model }] : []),
-                  ...models.map((entry) => (
-                  ({ value: `${entry.provider}/${entry.id}`, label: `${entry.provider} / ${entry.name ?? entry.id}` })
-                )),
-                ]}
-              />
+              <TaskModelPicker models={models} value={draft.model} onChange={(model) => update({ model, thinkingLevel: "" })} />
             </Field>
             <Field label={t("scheduledTasks.thinking")} style={{ flex: 1 }}>
               <Select
@@ -387,13 +525,9 @@ function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
               />
             </Field>
           </div>
-          <div className="sched-row">
-            <Field label={t("scheduledTasks.keepRuns")} hint={t("scheduledTasks.keepRunsHint")} style={{ flex: 1 }}>
-              <NumInput value={draft.keepRuns} onChange={(keepRuns) => update({ keepRuns })} />
-            </Field>
-            <Field label={t("scheduledTasks.maxRun")} hint={t("scheduledTasks.maxRunHint")} style={{ flex: 1 }}>
-              <NumInput value={draft.maxRunMinutes} onChange={(maxRunMinutes) => update({ maxRunMinutes })} />
-            </Field>
+          <div className="sched-inline-group">
+            <InlineNumber template={t("scheduledTasks.keepRunsInline")} value={draft.keepRuns} onChange={(keepRuns) => update({ keepRuns })} />
+            <InlineNumber template={t("scheduledTasks.maxRunInline")} value={draft.maxRunMinutes} onChange={(maxRunMinutes) => update({ maxRunMinutes })} />
           </div>
         </>
       )}
@@ -406,31 +540,135 @@ function TaskEditor({ task, defaults, sessions, onCancel, onSaved }: {
         <button type="button" className="sched-button ui-focus-ring" onClick={onCancel}>{t("scheduledTasks.cancel")}</button>
         <button type="button" className="sched-button sched-primary ui-focus-ring" onClick={() => void save()} disabled={saving}>{t("scheduledTasks.save")}</button>
       </div>
+      {addingWorkspace && (
+        <DirectoryPicker
+          busy={addWorkspaceBusy}
+          error={addWorkspaceError}
+          onCancel={() => { setAddingWorkspace(false); setAddWorkspaceError(null); }}
+          onSelect={(path, launchConfig) => void addWorkspace(path, launchConfig)}
+        />
+      )}
     </div>
   );
 }
 
-function WebhookInfo({ url, includeBody, onRegenerate }: { url: string; includeBody: boolean; onRegenerate: () => void }) {
+/** "Keep the last {n} runs" with the number input in place of `{n}`. */
+function InlineNumber({ template, value, onChange }: { template: string; value: string; onChange: (value: string) => void }) {
+  const [before, after = ""] = template.split("{n}");
+  return (
+    <label className="sched-inline">
+      {before && <span>{before}</span>}
+      <span className="sched-inline-input"><NumInput value={value} onChange={onChange} /></span>
+      {after && <span>{after}</span>}
+    </label>
+  );
+}
+
+/** Server time-zone marker for wall-clock schedules, with the run rules behind "?". */
+function ScheduleZone({ timeZone }: { timeZone: string | null }) {
+  const { t } = useI18n();
+  return (
+    <span className="sched-zone">
+      {timeZone && <span className="hint-chip">{t("scheduledTasks.serverTimeZone", { zone: timeZone })}</span>}
+      <InfoHint label={t("scheduledTasks.rulesLabel")}>{t("scheduledTasks.rules")}</InfoHint>
+    </span>
+  );
+}
+
+/** Where the webhook URL works: omp-web's own address, or a dedicated port on chosen interfaces. */
+function WebhookListenEditor({ draft, interfaces, update }: {
+  draft: Draft;
+  interfaces: NetworkInterfaceInfo[];
+  update: (patch: Partial<Draft>) => void;
+}) {
+  const { t } = useI18n();
+  // Chosen interfaces that are down right now still show, so they can be kept or dropped.
+  const known = new Set(interfaces.map((entry) => entry.name));
+  const rows = [
+    ...interfaces,
+    ...draft.listenInterfaces.filter((name) => !known.has(name)).map((name) => ({ name, addresses: [], internal: false })),
+  ];
+  return (
+    <div className="sched-listen">
+      <div className="sched-row">
+        <Field label={t("scheduledTasks.listen")} style={{ flex: 2 }}>
+          <Select
+            className="sched-input"
+            value={draft.listenMode}
+            onChange={(nextValue) => update({ listenMode: nextValue as Draft["listenMode"] })}
+            options={[
+              { value: "server", label: t("scheduledTasks.listenServer") },
+              { value: "dedicated", label: t("scheduledTasks.listenDedicated") },
+            ]}
+          />
+        </Field>
+        {draft.listenMode === "dedicated" && (
+          <Field label={t("scheduledTasks.listenPort")} style={{ width: 110 }}>
+            <NumInput value={draft.listenPort} onChange={(listenPort) => update({ listenPort })} />
+          </Field>
+        )}
+      </div>
+      {draft.listenMode === "dedicated" && (
+        <div role="group" aria-label={t("scheduledTasks.listenInterfaces")} className="sched-listen-ifaces">
+          {rows.map((entry) => (
+            <Check
+              key={entry.name}
+              label={`${entry.name} · ${entry.addresses.length ? entry.addresses.join(", ") : t("scheduledTasks.interfaceDown")}`}
+              checked={draft.listenInterfaces.includes(entry.name)}
+              onChange={(checked) => update({
+                listenInterfaces: checked ? [...draft.listenInterfaces, entry.name] : draft.listenInterfaces.filter((name) => name !== entry.name),
+              })}
+            />
+          ))}
+          <p className="sched-dim sched-listen-hint">{t("scheduledTasks.listenHint")}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function WebhookInfo({ urls, endpoints, includeBody, onRegenerate }: {
+  urls: string[];
+  /** Dedicated-listener status rows (down interfaces, bind errors); absent for omp-web's own URL. */
+  endpoints?: WebhookEndpointView[];
+  includeBody: boolean;
+  onRegenerate: () => void;
+}) {
   const { t } = useI18n();
   const [confirming, setConfirming] = useState(false);
+  const example = urls[0] ?? "";
   const curl = includeBody
-    ? `curl -X POST -H 'Content-Type: application/json' -d '{"example":true}' '${url}'`
-    : `curl -X POST '${url}'`;
+    ? `curl -X POST -H 'Content-Type: application/json' -d '{"example":true}' '${example}'`
+    : `curl -X POST '${example}'`;
   const copy = (text: string) => {
     void copyText(text).then(() => toast.success(t("scheduledTasks.copied")), () => toast.error(t("scheduledTasks.copyFailed")));
   };
   return (
     <section className="sched-webhook" aria-label={t("scheduledTasks.webhookUrl")}>
       <div className="sched-runs-title">{t("scheduledTasks.webhookUrl")}</div>
-      <div className="sched-webhook-row">
-        <code className="sched-webhook-url">{url}</code>
-        <button type="button" className="sched-button ui-focus-ring" onClick={() => copy(url)}><Copy size={13} aria-hidden="true" />{t("scheduledTasks.copy")}</button>
-      </div>
-      <div className="sched-webhook-row">
-        <code className="sched-webhook-url sched-dim">{curl}</code>
-        <button type="button" className="sched-button ui-focus-ring" onClick={() => copy(curl)}><Copy size={13} aria-hidden="true" />curl</button>
-      </div>
-      <p className="sched-dim">{t(includeBody ? "scheduledTasks.webhookUsageBody" : "scheduledTasks.webhookUsage")}</p>
+      {endpoints ? endpoints.map((endpoint) => (
+        <div key={`${endpoint.iface}|${endpoint.address ?? ""}`} className="sched-webhook-row">
+          <span className="hint-chip">{endpoint.iface}</span>
+          {endpoint.url ? <code className="sched-webhook-url">{endpoint.url}</code> : <span className="sched-dim sched-webhook-url">{t("scheduledTasks.interfaceDown")}</span>}
+          {endpoint.error && endpoint.url && <span className="sched-webhook-error" role="status">{t("scheduledTasks.listenError", { error: endpoint.error })}</span>}
+          {endpoint.url && <button type="button" className="sched-button ui-focus-ring" onClick={() => copy(endpoint.url!)}><Copy size={13} aria-hidden="true" />{t("scheduledTasks.copy")}</button>}
+        </div>
+      )) : urls.map((url) => (
+        <div key={url} className="sched-webhook-row">
+          <code className="sched-webhook-url">{url}</code>
+          <button type="button" className="sched-button ui-focus-ring" onClick={() => copy(url)}><Copy size={13} aria-hidden="true" />{t("scheduledTasks.copy")}</button>
+        </div>
+      ))}
+      {example && (
+        <div className="sched-webhook-row">
+          <code className="sched-webhook-url sched-dim">{curl}</code>
+          <button type="button" className="sched-button ui-focus-ring" onClick={() => copy(curl)}><Copy size={13} aria-hidden="true" />curl</button>
+        </div>
+      )}
+      <p className="sched-webhook-meta">
+        <span className="sched-credential"><KeyRound size={13} aria-hidden="true" />{t("scheduledTasks.webhookCredential")}</span>
+        <span className="hint-chip">{t(includeBody ? "scheduledTasks.webhookBodyIncluded" : "scheduledTasks.webhookBodyIgnored")}</span>
+      </p>
       <div className="sched-actions">
         <button type="button" className="sched-button ui-focus-ring" onClick={() => setConfirming(true)}><RefreshCw size={13} aria-hidden="true" />{t("scheduledTasks.webhookRegenerate")}</button>
       </div>
@@ -448,9 +686,10 @@ function WebhookInfo({ url, includeBody, onRegenerate }: { url: string; includeB
   );
 }
 
-function TaskDetail({ task, session, onEdit, onDelete, onChanged, onOpenSession }: {
+function TaskDetail({ task, session, timeZone, onEdit, onDelete, onChanged, onOpenSession }: {
   task: ScheduledTaskView;
   session: SessionInfo | undefined;
+  timeZone: string | null;
   onEdit: () => void;
   onDelete: () => void;
   onChanged: () => Promise<void>;
@@ -487,7 +726,10 @@ function TaskDetail({ task, session, onEdit, onDelete, onChanged, onOpenSession 
           )}
         </dd>
         <dt>{t("scheduledTasks.repeat")}</dt>
-        <dd>{describeRepeat(task.repeat, t, locale)} · {nextRunText(task, t, locale)}</dd>
+        <dd className="sched-repeat">
+          {describeRepeat(task.repeat, t, locale)} · {nextRunText(task, t, locale)}
+          {task.repeat.kind !== "webhook" && <ScheduleZone timeZone={task.repeat.kind === "interval" ? null : timeZone} />}
+        </dd>
         {task.createdByAgent && (
           <>
             <dt>{t("scheduledTasks.origin")}</dt>
@@ -507,7 +749,10 @@ function TaskDetail({ task, session, onEdit, onDelete, onChanged, onOpenSession 
       <pre className="sched-prompt">{task.message}</pre>
       {task.repeat.kind === "webhook" && task.webhookToken && (
         <WebhookInfo
-          url={`${window.location.origin}/api/hooks/${task.webhookToken}`}
+          urls={task.webhookEndpoints
+            ? task.webhookEndpoints.flatMap((endpoint) => (endpoint.url ? [endpoint.url] : []))
+            : [`${window.location.origin}/api/hooks/${task.webhookToken}`]}
+          endpoints={task.webhookEndpoints}
           includeBody={task.webhookIncludeBody}
           onRegenerate={() => void act({ action: "regenerate-webhook" }, t("scheduledTasks.webhookRegenerated"))}
         />
@@ -566,6 +811,8 @@ export function ScheduledTasksPanel({ currentSessionId, currentCwd, onOpenSessio
   const { t, locale } = useI18n();
   const [open, setOpen] = useState(false);
   const [tasks, setTasks] = useState<ScheduledTaskView[] | null>(null);
+  const [timeZone, setTimeZone] = useState<string | null>(null);
+  const [interfaces, setInterfaces] = useState<NetworkInterfaceInfo[]>([]);
   const [sessions, setSessions] = useState<SessionInfo[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -575,7 +822,10 @@ export function ScheduledTasksPanel({ currentSessionId, currentCwd, onOpenSessio
 
   const refresh = useCallback(async () => {
     try {
-      setTasks((await request<{ tasks: ScheduledTaskView[] }>("/api/scheduled-tasks")).tasks);
+      const body = await request<{ tasks: ScheduledTaskView[]; timeZone?: string; interfaces?: NetworkInterfaceInfo[] }>("/api/scheduled-tasks");
+      setTasks(body.tasks);
+      setTimeZone(body.timeZone ?? null);
+      setInterfaces(body.interfaces ?? []);
       setLoadError(null);
     } catch (error) {
       setLoadError(error instanceof Error ? error.message : String(error));
@@ -669,7 +919,6 @@ export function ScheduledTasksPanel({ currentSessionId, currentCwd, onOpenSessio
                 </button>
               ))}
             </div>
-            <footer className="sched-list-footer">{t("scheduledTasks.footer")}</footer>
           </aside>
           <section className="sched-main" aria-label={t("scheduledTasks.details")}>
             <div className="sched-back">{iconButton(t("scheduledTasks.back"), <ArrowLeft size={17} />, () => { setMobileList(true); setEditing(null); })}</div>
@@ -679,6 +928,8 @@ export function ScheduledTasksPanel({ currentSessionId, currentCwd, onOpenSessio
                 task={editing === "edit" ? selected ?? null : null}
                 defaults={{ cwd: currentCwd ?? "", sessionId: currentSessionId }}
                 sessions={sessions}
+                timeZone={timeZone}
+                interfaces={interfaces}
                 onCancel={() => setEditing(null)}
                 onSaved={(task) => { setEditing(null); setSelectedId(task.id); void refresh(); }}
               />
@@ -686,6 +937,7 @@ export function ScheduledTasksPanel({ currentSessionId, currentCwd, onOpenSessio
               <TaskDetail
                 task={selected}
                 session={selected.targetSessionId ? sessionsById.get(selected.targetSessionId) : undefined}
+                timeZone={timeZone}
                 onEdit={() => setEditing("edit")}
                 onDelete={() => setDeleting(selected)}
                 onChanged={refresh}
@@ -694,7 +946,6 @@ export function ScheduledTasksPanel({ currentSessionId, currentCwd, onOpenSessio
             ) : (
               <div className="sched-placeholder">
                 <CalendarClock size={28} aria-hidden="true" />
-                <p>{t("scheduledTasks.intro")}</p>
                 <button type="button" className="sched-button ui-focus-ring" onClick={() => { setEditing("new"); setMobileList(false); }}>
                   <Plus size={14} aria-hidden="true" />{t("scheduledTasks.add")}
                 </button>

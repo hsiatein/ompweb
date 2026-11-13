@@ -9,6 +9,8 @@ const markdownSanitizeSchema = {
   attributes: {
     ...defaultSchema.attributes,
     code: [["className", /^language-./, "math-inline", "math-display"]],
+    // remarkTextLinks marks detected links; the renderer drops paths it cannot open.
+    a: [...(defaultSchema.attributes?.a ?? []), ["dataTextLink", "url", "path"]],
   },
   // These URLs are routed through the file API by MarkdownBody/FileViewer,
   // then checked again by their URL transform and the server's authorization.

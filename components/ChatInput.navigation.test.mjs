@@ -96,3 +96,25 @@ test("attachment errors stay accessible on their glass surface", async () => {
   assert.ok(alert.classList.contains("wallpaper-surface"));
   assert.match(alert.textContent, /Attachments are disabled/);
 });
+
+test("left and right move the caret while the slash command menu is open", async () => {
+  Element.prototype.scrollIntoView ??= () => {}; // jsdom lacks it; the menu scrolls its active item
+  const user = userEvent.setup();
+  const sent = [];
+  render(React.createElement(ChatInput, {
+    onSend: (text) => sent.push(text),
+    onAbort() {},
+    isStreaming: false,
+    slashCommands: [{ name: "skill:h3-video", description: "video", source: "skill" }],
+  }));
+  const box = screen.getByRole("textbox");
+  // Matches a command: the menu is open, but ←/→ still edit the text.
+  await user.type(box, "/skill:h3");
+  await user.keyboard("{ArrowLeft}{ArrowLeft}X");
+  assert.equal(box.value, "/skill:Xh3");
+  // Matches nothing (a path): every key edits the text.
+  await user.clear(box);
+  await user.type(box, "/tmp/x");
+  await user.keyboard("{ArrowLeft}{ArrowLeft}Y{ArrowRight}Z");
+  assert.equal(box.value, "/tmpY/Zx");
+});

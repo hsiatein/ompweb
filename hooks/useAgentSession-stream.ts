@@ -1,6 +1,7 @@
 // Streaming/SSE, message-transform, subagent, and session-protocol helpers
 // extracted from useAgentSession (pure logic only — no hook state).
 
+import { playAttentionSound } from "./useAudio";
 import type {
   AgentMessage,
   CustomMessage,
@@ -317,6 +318,8 @@ export async function runHostTool(
     case "notify": {
       const title = str(args.title) ?? "OMP";
       const message = str(args.message) ?? "";
+      // Audible even when the OS blocks notifications or the tab is in front.
+      playAttentionSound();
       if (typeof Notification !== "undefined") {
         try {
           if (Notification.permission === "granted") {

@@ -11,6 +11,7 @@ import { parseSceneTimeline } from "./wallpaper-timeline";
 import { readScenePropertyOverrides, resolveSceneProject, safeWallpaperFile } from "./wallpaper-store";
 import type { BrowserScene, SceneLayer, ScenePass, SceneParticles, ScenePropertyScript, SceneValues } from "./wallpaper-scene-types";
 import { cachedBrowserScene } from "./wallpaper-scene-cache";
+import { discoverSceneForms } from "./wallpaper-scene-forms";
 
 type Compiled = { manifest: BrowserScene; assets: Map<string, Buffer> };
 const obj = (v: unknown): SceneValues => v && typeof v === "object" && !Array.isArray(v) ? v as SceneValues : {};
@@ -151,6 +152,12 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
       vertex = vertex.replace(/gl_Position\s*=\s*vec4\(a_Position,\s*1\.0\)/g, "gl_Position = mul(vec4(a_Position, 1.0), g_ModelViewProjectionMatrix)");
     }
     let fragment = await shader(`shaders/${name}.frag`);
+    // The standard X-ray pass keeps its authored blend/opacity mask. Only its
+    // pointer sprite is replaced when a fixed form is selected.
+    const pointerMask = /\bblend\s*\*=\s*blendSample\.x\s*\*\s*blendSample\.y\s*;/;
+    const xray = name === "effects/xray" && pointerMask.test(fragment);
+    if (xray) fragment = "uniform float u_OmpXrayMode;\n" + fragment.replace(pointerMask,
+      "blend *= (u_OmpXrayMode < 0.0 ? blendSample.x * blendSample.y : u_OmpXrayMode);");
     // Legacy exports occasionally omit a fragment input declaration even though
     // its type and producer are present in the paired vertex shader.
     for (const match of vertex.matchAll(/\bvarying\s+(\w+)\s+(\w+)\s*;/g)) {
@@ -186,6 +193,7 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
         uniforms[uniform] = type.startsWith("vec") ? sceneVector(value, Array(Number(type.slice(3))).fill(0)) : num(value, 0);
       }
     }
+    if (xray) uniforms.u_OmpXrayMode = -1;
     // Infer sampler combos before supplying GLSL defaults for absent flags.
     const declared = new Set(["GLSL", "HLSL", ...[...source.matchAll(/^\s*#define\s+(\w+)/gm)].map(m => m[1])]);
     for (const line of source.matchAll(/^\s*#(?:if|elif)\s+([^\r\n]+)/gm)) for (const key of line[1].match(/\b[A-Z][A-Z0-9_]*\b/g) || []) if (!declared.has(key)) combos[key] ??= 0;
@@ -193,7 +201,7 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
     for (let i = 1; i < refs.length; i++) mapped[i] = typeof refs[i] === "string" && !String(refs[i]).startsWith("_rt_") ? await texture(refs[i] as string) : null;
     const defines = Object.entries(combos).map(([key, value]) => { if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key) || !Number.isInteger(value)) throw new Error(`Invalid shader combo: ${key}=${JSON.stringify(value)}`); return `#define ${key} ${value}\n`; }).join("");
     const vertexSource = prelude + defines + browserEffectGlsl(vertex, combos);
-    return { vertex: vertexSource, fragment: prelude + defines + browserFragmentGlsl(browserEffectGlsl(fragment, combos), vertexSource), uniforms, scripts: scripts.size ? [...scripts.values()] : undefined, textures: mapped, repeats: name === "effects/waterripple" ? [2] : ["effects/pulse", "effects/clouds", "effects/lightshafts"].includes(name) ? [1] : [] };
+    return { vertex: vertexSource, fragment: prelude + defines + browserFragmentGlsl(browserEffectGlsl(fragment, combos), vertexSource), uniforms, xray: xray || undefined, scripts: scripts.size ? [...scripts.values()] : undefined, textures: mapped, repeats: name === "effects/waterripple" ? [2] : ["effects/pulse", "effects/clouds", "effects/lightshafts"].includes(name) ? [1] : [] };
   }
   async function particle(file: string, common: Pick<SceneParticles, "id" | "origin" | "scale" | "angle" | "parallax">, overrides: SceneValues, depth = 0): Promise<SceneParticles> {
     if (depth > 3) throw new Error("Particle child system nesting exceeds limit");
@@ -243,6 +251,7 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
   }
   const objects = array(scene.objects);
   const controlsVideos = objects.some(o => Object.values(o).some(v => typeof obj(v).script === "string" && /\bgetVideoTexture\s*\(/.test(obj(v).script as string)));
+  const controlsLayers = objects.some(o => Object.values(o).some(v => typeof obj(v).script === "string" && /\bgetLayer\s*\(/.test(obj(v).script as string)));
   const parentIds = new Set(objects.map(o => o.parent).filter(p => typeof p === "number"));
   if (objects.length > 256) throw new Error("Too many scene objects");
   for (const raw of objects) {
@@ -269,7 +278,7 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
       scripts.push({ property, source: binding.script, properties: Object.fromEntries(Object.entries(obj(binding.scriptproperties)).map(([k, v]) => [k, obj(v).value ?? v])) });
       o[property] = binding.value;
     }
-    if ((o.visible === false || obj(o.visible).value === false) && !scripts.length && !timelines.length && !(typeof o.id === "number" && parentIds.has(o.id)) && !(controlsVideos && o.image)) continue;
+    if ((o.visible === false || obj(o.visible).value === false) && !scripts.length && !timelines.length && !(typeof o.id === "number" && parentIds.has(o.id)) && !((controlsVideos || controlsLayers) && o.image)) continue;
     if (o.sound) {
       const files = Array.isArray(o.sound) ? o.sound : [o.sound];
       if (!files.length || files.length > 32 || (manifest.sounds?.length || 0) >= 16 || files.some(f => typeof f !== "string")) throw new Error("Invalid scene sound playlist");
@@ -285,7 +294,7 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
     if (o.attachment !== undefined && (typeof o.attachment !== "string" || !o.attachment || o.attachment.length > 512 || o.parent === undefined)) throw new Error("Invalid scene attachment name");
     if (o.particle && o.parent !== undefined) throw new Error("Parented particle systems are not supported yet");
     if (scripts.length && o.particle) throw new Error("Particle property scripts are not supported yet");
-    const common = { id: num(o.id, 0), origin: sceneVector(o.origin, [0, 0, 0]), scale: sceneVector(o.scale, [1, 1, 1]), angle: sceneVector(o.angles, [0, 0, 0])[2], parallax: sceneVector(o.parallaxDepth, [1, 1]), scripts: scripts.length ? scripts : undefined, visible: o.visible !== false, alignment: String(o.alignment || "center"), parent: o.parent as number | undefined, attachment: o.attachment as string | undefined, parallaxInherited: o.parent !== undefined && o.parallaxDepth === undefined };
+    const common = { id: num(o.id, 0), origin: sceneVector(o.origin, [0, 0, 0]), scale: sceneVector(o.scale, [1, 1, 1]), angle: sceneVector(o.angles, [0, 0, 0])[2], parallax: sceneVector(o.parallaxDepth, [1, 1]), scripts: scripts.length ? scripts : undefined, visible: (obj(o.visible).value ?? o.visible) !== false, alignment: String(o.alignment || "center"), parent: o.parent as number | undefined, attachment: o.attachment as string | undefined, parallaxInherited: o.parent !== undefined && o.parallaxDepth === undefined };
     Object.assign(common, { timelines: timelines.length ? timelines : undefined, disablePropagation: o.disablepropagation === true });
     if (o.camera !== undefined) {
       if (o.camera !== "default" || o.parent !== undefined || sceneVector(o.angles, [0, 0, 0]).some(n => n !== 0) || manifest.layers.some(l => l.camera)) throw new Error("Unsupported scene camera");
@@ -374,6 +383,7 @@ export async function compileBrowserScene(id: string, observe: (file: string) =>
   for (const layer of manifest.layers) if (layer.attachment && !manifest.layers.find(l => l.id === layer.parent)?.mesh?.attachments?.some(a => a.name === layer.attachment)) throw new Error(`Missing parent attachment: ${layer.attachment}`);
   sceneWorldTransforms(manifest.layers);
   if (!manifest.layers.some(l => l.scripts?.length)) delete manifest.scriptTemplates;
+  manifest.forms = await discoverSceneForms(manifest);
   return { manifest, assets };
 }
 

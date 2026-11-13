@@ -38,7 +38,7 @@ export async function PUT(request: Request) {
       }
     }
     writeNativeSettings(body.settings);
-    if (body.settings.enabledModels !== undefined || body.settings.disabledProviders !== undefined || body.settings.modelProviderOrder !== undefined) {
+    if (body.settings.enabledModels !== undefined || body.settings.modelProviderOrder !== undefined) {
       invalidateModelsCache();
       disposeUtilityRpc();
     }

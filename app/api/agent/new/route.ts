@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { apiErrorResponse } from "@/lib/api-utils";
 import { existsSync } from "fs";
 import { WebRpcError, spawnNewSession } from "@/lib/rpc-manager";
-import { sanitizeAccountPins } from "@/lib/account-routing";
+import { isProviderId, sanitizeAccountPins } from "@/lib/account-routing";
 import { RpcCommandError } from "@/lib/omp/rpc-process";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { MAX_AGENT_COMMAND_REQUEST_BYTES } from "@/lib/image-attachments";
@@ -42,7 +42,8 @@ export async function POST(req: Request) {
     }
 
     // Use a one-time key so startRpcSession's lock doesn't conflict with real session ids
-    const { provider, modelId, toolNames, thinkingLevel, advisor, accountPins, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: string; advisor?: boolean; accountPins?: unknown; [key: string]: unknown };
+    const { provider, modelId, toolNames, thinkingLevel, advisor, accountPins, providerPin, ...promptCommand } = command as { provider?: string; modelId?: string; toolNames?: string[]; thinkingLevel?: string; advisor?: boolean; accountPins?: unknown; providerPin?: unknown; [key: string]: unknown };
+    if (providerPin !== undefined && providerPin !== null && !isProviderId(providerPin)) throw new SyntaxError("Invalid provider selection");
     // A session id has no meaning for a fresh spawn and must never reach the
     // child RPC: a stale or forged id would address the wrong session.
     delete promptCommand.sessionId;
@@ -55,6 +56,7 @@ export async function POST(req: Request) {
       toolNames,
       advisor: advisor === true,
       accountPins: sanitizeAccountPins(accountPins),
+      providerPin: typeof providerPin === "string" ? providerPin : undefined,
       provider,
       modelId,
       thinkingLevel,

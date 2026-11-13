@@ -54,11 +54,11 @@ import { ComposerModeStatus, ModelErrorBanner, QueuedActionButton } from "./Chat
 import { CHAT_COLUMN_MAX_WIDTH } from "@/lib/chat-layout";
 import {
   composeMessageWithTextAttachments,
-  describeTextAttachmentSkip,
   formatAttachmentBytes,
   MAX_ATTACHED_TEXT_FILES,
   selectTextAttachments,
 } from "@/lib/chat-attachments";
+import { MAX_CHAT_UPLOAD_BYTES, uploadChatFile } from "@/lib/uploaded-files";
 import {
   MAX_ATTACHED_IMAGE_BYTES,
   MAX_ATTACHED_IMAGES,
@@ -110,8 +110,11 @@ interface Props {
   onFastModeChange?: (enabled: boolean) => void;
   /** Session whose account choice the account chip edits; null for a new chat. */
   accountSessionId?: string | null;
+  accountRoutingBusy?: boolean;
   pendingAccountPins?: AccountPins;
   onPendingAccountPinsChange?: (pins: AccountPins) => void;
+  pendingProviderPin?: string | null;
+  onPendingProviderPinChange?: (provider: string | null) => void;
   onAbortCompaction?: () => void;
   isCompacting?: boolean;
   compactResult?: CompactResultInfo | null;
@@ -170,6 +173,8 @@ interface Props {
   statusText?: string | null;
   /** Open Settings → Models & Providers from the model picker footer. */
   onOpenProviders?: () => void;
+  /** Text the Send button sends when the composer is empty (an existing, idle chat): one click to continue. */
+  continuePrompt?: string;
 }
 
 export interface ChatInputHandle {
@@ -262,7 +267,7 @@ function menuDropStyle(placement: MenuPlacement, maxHeight: number | null): Reac
 
 export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatInput({
   onSend, onPredictWord, onPredictWordFeedback, onAbort, onSteer, onFollowUp, isStreaming, model, isAutoModelSelection, modelNames, modelList, modelError, modelsLoading, onModelChange, fastModeEnabled, fastModeActive, fastModeSupported, onFastModeChange,
-  accountSessionId, pendingAccountPins, onPendingAccountPinsChange,
+  accountSessionId, accountRoutingBusy, pendingAccountPins, onPendingAccountPinsChange, pendingProviderPin, onPendingProviderPinChange,
   onAbortCompaction, isCompacting, compactResult,
   thinkingLevel, onThinkingLevelChange, availableThinkingLevels, thinkingLevelMap, modelNameOverride,
   toolPreset, onToolPresetChange,
@@ -293,6 +298,7 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
   onMinimize,
   statusText,
   onOpenProviders,
+  continuePrompt,
 }: Props, ref) {
   const isMobile = useIsMobile();
   // Read per render so a Settings change applies on the next keystroke.
@@ -548,24 +554,26 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
       0,
       MAX_ATTACHED_TEXT_FILES - attachedTextFilesRef.current.length - pendingTextFileCountRef.current,
     );
-    // In-flight batches reserve their bytes too, so two overlapping drops
-    // cannot each fit under the aggregate budget on their own.
-    const { accepted: textFiles, tooLarge, overBudget } = selectTextAttachments(files, {
-      usedBytes: attachedTextFilesRef.current.reduce((total, file) => total + file.size, 0) + pendingTextFileBytesRef.current,
-      usedSlots: attachedTextFilesRef.current.length + pendingTextFileCountRef.current,
-    });
-    // Report every dropped candidate, not just an entirely rejected batch: a
-    // drop of several files can lose some to the budget while accepting others.
-    const limitMessage = remaining === 0 && files.length > 0
-      ? t("chatInput.attachmentTextFilesLimit", { count: MAX_ATTACHED_TEXT_FILES })
-      : describeTextAttachmentSkip({ tooLarge, overBudget });
-    if (!textFiles.length) {
-      if (files.length > 0) setAttachError(limitMessage ?? t("chatInput.attachmentFilesSkipped", { count: files.length }));
+    if (remaining === 0) {
+      if (files.length > 0) setAttachError(t("chatInput.attachmentTextFilesLimit", { count: MAX_ATTACHED_TEXT_FILES }));
       return;
     }
+    // Text that fits the inline budget goes into the prompt; everything else
+    // (too large, or binary once read) is uploaded and referenced by path.
+    const inlineBytes = (list: AttachedTextFile[]) => list.reduce((total, file) => total + (file.uploadedPath ? 0 : file.size), 0);
+    const batch = files.slice(0, remaining);
+    // In-flight batches reserve their bytes too, so two overlapping drops
+    // cannot each fit under the aggregate budget on their own.
+    const { accepted: textFiles } = selectTextAttachments(batch, {
+      usedBytes: inlineBytes(attachedTextFilesRef.current) + pendingTextFileBytesRef.current,
+      usedSlots: 0,
+    });
+    const toUpload = batch.filter((file) => !textFiles.includes(file));
     const revision = attachmentRevisionRef.current;
-    pendingTextFileCountRef.current += textFiles.length;
-    pendingTextFileBytesRef.current += textFiles.reduce((total, file) => total + file.size, 0);
+    const reservedBytes = textFiles.reduce((total, file) => total + file.size, 0);
+    pendingTextFileCountRef.current += batch.length;
+    pendingTextFileBytesRef.current += reservedBytes;
+    const failures: string[] = [];
     try {
       const readFiles = await Promise.all(
         textFiles.map(async (file): Promise<AttachedTextFile> => ({
@@ -575,29 +583,38 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
           size: file.size,
         })),
       );
-      // The composer was cleared/sent while the reads were in flight —
-      // drop the batch instead of re-appending stale attachments.
-      if (attachmentRevisionRef.current !== revision) return;
       // Binary content cannot be inlined into the prompt: NUL bytes, or
       // U+FFFD replacement characters left by mis-decoded binary (e.g.
       // UTF-16 text read as UTF-8).
-      const newFiles = readFiles.filter(
-        (file) => !file.content.includes("\u0000") && !file.content.includes("\uFFFD"),
-      );
-      const skipped = textFiles.length - newFiles.length;
+      const isBinary = (file: AttachedTextFile) => file.content.includes("\u0000") || file.content.includes("\uFFFD");
+      const inline = readFiles.filter((file) => !isBinary(file));
+      for (const [index, file] of readFiles.entries()) if (isBinary(file)) toUpload.push(textFiles[index]);
+      const uploaded: AttachedTextFile[] = [];
+      for (const file of toUpload) {
+        if (file.size > MAX_CHAT_UPLOAD_BYTES) {
+          failures.push(t("chatInput.attachmentUploadTooLarge", { name: file.name, limit: formatAttachmentBytes(MAX_CHAT_UPLOAD_BYTES) }));
+          continue;
+        }
+        try {
+          const stored = await uploadChatFile(file);
+          uploaded.push({ name: file.name, mimeType: file.type, content: "", size: stored.size, uploadedPath: stored.path });
+        } catch (error) {
+          failures.push(t("chatInput.attachmentUploadFailed", { name: file.name, detail: error instanceof Error ? error.message : String(error) }));
+        }
+      }
+      // The composer was cleared/sent while the reads were in flight —
+      // drop the batch instead of re-appending stale attachments.
+      if (attachmentRevisionRef.current !== revision) return;
       setAttachedTextFiles((prev) => [
         ...prev,
-        ...newFiles.slice(0, Math.max(0, MAX_ATTACHED_TEXT_FILES - prev.length)),
+        ...[...inline, ...uploaded].slice(0, Math.max(0, MAX_ATTACHED_TEXT_FILES - prev.length)),
       ]);
-      setAttachError(
-        limitMessage
-          ?? (skipped > 0 ? t("chatInput.attachmentBinarySkipped", { count: skipped }) : null),
-      );
+      setAttachError(failures.length ? failures.join(" ") : (files.length > remaining ? t("chatInput.attachmentTextFilesLimit", { count: MAX_ATTACHED_TEXT_FILES }) : null));
     } catch {
       setAttachError(t("chatInput.attachmentTextReadFailed"));
     } finally {
-      pendingTextFileCountRef.current -= textFiles.length;
-      pendingTextFileBytesRef.current -= textFiles.reduce((total, file) => total + file.size, 0);
+      pendingTextFileCountRef.current -= batch.length;
+      pendingTextFileBytesRef.current -= reservedBytes;
     }
   }, [t]);
 
@@ -1276,47 +1293,12 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
     handleItemSteer(firstQueued);
   }, [firstQueued, handleItemSteer]);
 
-  const getNextSlashIndex = useCallback((direction: "up" | "down" | "left" | "right") => {
+  // The command grid is one listbox in reading order: ↑/↓ step through every command.
+  // ←/→ stay with the text, so the caret can still move inside a typed command.
+  const getNextSlashIndex = useCallback((direction: "up" | "down") => {
     const lastIndex = filteredSlashCommands.length - 1;
     if (lastIndex < 0) return 0;
-
-    if (direction === "left") return Math.max(0, slashActiveIndex - 1);
-    if (direction === "right") return Math.min(lastIndex, slashActiveIndex + 1);
-
-    const currentNode = slashItemRefs.current[slashActiveIndex];
-    if (!currentNode) {
-      return direction === "down"
-        ? Math.min(lastIndex, slashActiveIndex + 1)
-        : Math.max(0, slashActiveIndex - 1);
-    }
-
-    const currentRect = currentNode.getBoundingClientRect();
-    const currentX = currentRect.left + currentRect.width / 2;
-    const currentY = currentRect.top + currentRect.height / 2;
-    let bestIndex = -1;
-    let bestScore = Number.POSITIVE_INFINITY;
-
-    for (let index = 0; index <= lastIndex; index += 1) {
-      if (index === slashActiveIndex) continue;
-      const node = slashItemRefs.current[index];
-      if (!node) continue;
-      const rect = node.getBoundingClientRect();
-      const candidateY = rect.top + rect.height / 2;
-      const verticalDelta = candidateY - currentY;
-      if (direction === "down" ? verticalDelta <= 4 : verticalDelta >= -4) continue;
-
-      const candidateX = rect.left + rect.width / 2;
-      const score = Math.abs(verticalDelta) * 1000 + Math.abs(candidateX - currentX);
-      if (score < bestScore) {
-        bestIndex = index;
-        bestScore = score;
-      }
-    }
-
-    if (bestIndex >= 0) return bestIndex;
-    return direction === "down"
-      ? Math.min(lastIndex, slashActiveIndex + 1)
-      : Math.max(0, slashActiveIndex - 1);
+    return direction === "down" ? Math.min(lastIndex, slashActiveIndex + 1) : Math.max(0, slashActiveIndex - 1);
   }, [filteredSlashCommands.length, slashActiveIndex]);
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1362,7 +1344,8 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         }
       }
 
-      if (slashMenuOpen && slashQuery !== null) {
+      // A query matching nothing (a path like `/tmp/x`) leaves every key to the text.
+      if (slashMenuOpen && slashQuery !== null && filteredSlashCommands.length > 0) {
         if (e.key === "ArrowDown") {
           e.preventDefault();
           setSlashActiveIndex(getNextSlashIndex("down"));
@@ -1371,16 +1354,6 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
         if (e.key === "ArrowUp") {
           e.preventDefault();
           setSlashActiveIndex(getNextSlashIndex("up"));
-          return;
-        }
-        if (e.key === "ArrowRight") {
-          e.preventDefault();
-          setSlashActiveIndex(getNextSlashIndex("right"));
-          return;
-        }
-        if (e.key === "ArrowLeft") {
-          e.preventDefault();
-          setSlashActiveIndex(getNextSlashIndex("left"));
           return;
         }
         if (e.key === "Escape") {
@@ -2966,10 +2939,13 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
             {model && pendingAccountPins && onPendingAccountPinsChange && (
               <AccountPicker
                 sessionId={accountSessionId ?? null}
+                busy={accountRoutingBusy}
                 provider={model.provider}
                 modelId={model.modelId}
                 pendingPins={pendingAccountPins}
                 onPendingPinsChange={onPendingAccountPinsChange}
+                pendingProviderPin={pendingProviderPin ?? null}
+                onPendingProviderPinChange={onPendingProviderPinChange}
               />
             )}
 
@@ -3220,22 +3196,29 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                 {t("chatInput.stop")}
               </button>
             ) : (
+              (() => {
+                const dictating = isRecording || isPaused || isReviewing;
+                const hasDraft = Boolean(value.trim() || attachedImages.length || attachedTextFiles.length);
+                // Empty composer in an existing chat: Send continues the conversation.
+                const continues = !dictating && !isTranscribing && !hasDraft && Boolean(continuePrompt);
+                const active = dictating || isTranscribing || hasDraft;
+                return (
               <button
                 type="button"
                 className="composer-primary-action wallpaper-inset"
-                onClick={isRecording || isPaused || isReviewing ? stopAndSendDictation : () => void handleSend()}
-                disabled={isTranscribing || !(isRecording || isPaused || isReviewing || value.trim() || attachedImages.length || attachedTextFiles.length)}
-                title={isRecording || isPaused || isReviewing ? t("chatInput.sendDictation") : t("chatInput.send")}
+                onClick={dictating ? stopAndSendDictation : () => void handleSend(continues ? continuePrompt : undefined)}
+                disabled={isTranscribing || !(dictating || hasDraft || continues)}
+                title={dictating ? t("chatInput.sendDictation") : continues ? t("chatInput.continueTitle", { prompt: continuePrompt ?? "" }) : t("chatInput.send")}
                 style={{
                   display: "flex", alignItems: "center", gap: 6,
-                  background: (isRecording || isPaused || isReviewing || isTranscribing || value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--accent-strong)" : "var(--bg-panel)",
+                  background: active ? "var(--accent-strong)" : "var(--bg-panel)",
                   border: "none",
                   borderRadius: 8,
-                  color: (isRecording || isPaused || isReviewing || isTranscribing || value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--on-accent)" : "var(--text-dim)",
-                  cursor: isTranscribing ? "wait" : (isRecording || isPaused || value.trim() || attachedImages.length || attachedTextFiles.length) ? "pointer" : "not-allowed",
+                  color: active ? "var(--on-accent)" : continues ? "var(--text)" : "var(--text-dim)",
+                  cursor: isTranscribing ? "wait" : (dictating || hasDraft || continues) ? "pointer" : "not-allowed",
                   fontSize: 12,
                   fontWeight: 600,
-                  boxShadow: (isRecording || isPaused || isTranscribing || value.trim() || attachedImages.length || attachedTextFiles.length) ? "var(--shadow-card)" : "none",
+                  boxShadow: active ? "var(--shadow-card)" : "none",
                   transition: "background var(--dur-fast) var(--ease-out-warm), box-shadow var(--dur-fast) var(--ease-out-warm)",
                 }}
               >
@@ -3247,8 +3230,10 @@ export const ChatInput = memo(forwardRef<ChatInputHandle, Props>(function ChatIn
                     <polyline points="7.5 3 12 7 7.5 11" />
                   </svg>
                 )}
-                {t("chatInput.send")}
+                {continues ? t("chatInput.continue") : t("chatInput.send")}
               </button>
+                );
+              })()
             )}
           </div>
           </div>

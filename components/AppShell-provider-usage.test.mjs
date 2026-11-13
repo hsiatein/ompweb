@@ -4,7 +4,8 @@ import test, { afterEach } from "node:test";
 import { act, cleanup, renderHook } from "@testing-library/react/pure.js";
 import { createJiti } from "jiti";
 
-const { useProviderUsage } = await createJiti(import.meta.url, { tryNative: false }).import("./AppShell-provider-usage.ts");
+const { useProviderUsage } = await createJiti(import.meta.url, { tryNative: false, tsconfigPaths: true }).import("./AppShell-provider-usage.ts");
+const { ACCOUNT_ROUTING_CHANGED_EVENT, notifyAccountRoutingChanged } = await createJiti(import.meta.url, { tryNative: false }).import("../lib/account-choices.ts");
 afterEach(() => {
   cleanup();
   delete document.visibilityState;
@@ -193,4 +194,23 @@ test("refresh loads at once when idle and once more after a request already runn
   assert.equal(s.requests.length, 3);
   await s.tick(1);
   assert.equal(s.requests.length, 4);
+});
+
+test("routing changes in another tab invalidate a hidden panel before its refresh deadline", async t => {
+  const s = setup(t);
+  await s.resolve(0, 10);
+  document.visibilityState = "hidden";
+  await act(async () => {
+    window.dispatchEvent(new window.StorageEvent("storage", { key: ACCOUNT_ROUTING_CHANGED_EVENT, newValue: "changed" }));
+  });
+  assert.equal(s.requests.length, 1);
+  document.visibilityState = "visible";
+  await s.event("visibilitychange");
+  assert.equal(s.requests.length, 2);
+  // A second save during this request requires a fresh answer after it settles.
+  await act(async () => { notifyAccountRoutingChanged(); });
+  await s.resolve(1, 20);
+  assert.equal(s.requests.length, 3);
+  await s.resolve(2, 30);
+  assert.equal(s.view.result.current.snapshot.reports[0].fiveHour.percent, 30);
 });

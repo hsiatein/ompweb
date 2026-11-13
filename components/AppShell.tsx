@@ -20,7 +20,7 @@ import { PetCompanion } from "./PetCompanion";
 import { WallpaperBackground } from "./WallpaperBackground";
 import { MemoPanel } from "./MemoPanel";
 import { ScheduledTasksPanel } from "./ScheduledTasksPanel";
-import { AskpassDialog } from "./AskpassDialog";
+import { AskpassDialog, focusAskpassRequest } from "./AskpassDialog";
 import { AttentionCenter } from "./AttentionCenter";
 import { useAskpassRequests } from "@/hooks/useAskpassRequests";
 import { sortAttention, type AttentionItem } from "@/lib/attention";
@@ -34,7 +34,7 @@ import type { RightPanelView } from "./RightPanel";
 import { BranchNavigator } from "./BranchNavigator";
 import { LanguageSwitcher } from "./LanguageSwitcher";
 import { CommandPaletteMount } from "./CommandPaletteMount";
-import { Archive, Check, Command, Ellipsis, Folder, History, Image as ImageIcon, Menu, MessageSquarePlus, PanelLeft, PanelRight, Settings, StickyNote, Terminal, Wand2, X, Zap } from "lucide-react";
+import { Archive, Check, ChevronsLeft, ChevronsRight, Command, Ellipsis, Folder, History, Image as ImageIcon, Menu, MessageSquarePlus, PanelLeft, PanelRight, Settings, StickyNote, Terminal, Wand2, X, Zap } from "lucide-react";
 import { ThemeSwitcher } from "./ThemeSwitcher";
 import { translate, useI18n } from "@/lib/i18n";
 import { formatApiError } from "@/lib/i18n/api-error";
@@ -49,6 +49,7 @@ import { getInitialNavigation } from "@/lib/initial-navigation";
 import { comparableProjectPath } from "@/lib/comparable-path";
 import { clearDraft } from "@/lib/draft-store";
 import { showCompletionNotification } from "@/lib/browser-notifications";
+import { playAttentionSound } from "@/hooks/useAudio";
 import {
   APP_UPDATE_COMPLETED_RELOAD_MS,
   APP_UPDATE_POLL_MS,
@@ -78,8 +79,11 @@ import {
   loadSidebarWidth,
   projectLabel,
   WorkspaceState,
+  workspaceSelectOptions,
 } from "./AppShell-layout";
 import type { CrossSessionHostToolCall, ManagedProject, SessionInfo, SessionTreeNode } from "@/lib/types";
+import type { WebPluginInfo } from "@/lib/web-plugin-types";
+import { readOpenPluginPage, writeOpenPluginPage, type OpenPluginPage } from "./PluginPage";
 import { runHostTool } from "@/hooks/useAgentSession-stream";
 import { sendAgentCommand } from "@/lib/agent-client";
 import type { ChatInputHandle } from "./ChatInput";
@@ -98,6 +102,7 @@ import {
 } from "./AppUpdateDialog";
 import { ArchiveBrowser } from "./ArchiveBrowser";
 import { publishSessionsChanged } from "@/lib/session-change-bus";
+import { subscribeAppEvents } from "@/lib/app-events";
 // The settings shell is part of the app bundle so opening it does not fetch or compile a modal chunk. The right panel (viewer included) remains on demand.
 const RightPanel = dynamic(() => import("./RightPanel").then((m) => m.RightPanel), {
   ssr: false,
@@ -148,6 +153,7 @@ export function AppShell() {
   const [archiveBrowserOpen, setArchiveBrowserOpen] = useState(false);
   // "Needs you" items: session dialogs (from the sidebar's running stream) and sudo prompts.
   const [sessionAttention, setSessionAttention] = useState<AttentionItem[]>([]);
+  const [runningSessionCount, setRunningSessionCount] = useState(0);
   const askpassRequests = useAskpassRequests();
   const attentionItems = useMemo(() => sortAttention([
     ...sessionAttention,
@@ -163,6 +169,9 @@ export function AppShell() {
   ]), [sessionAttention, askpassRequests]);
   const [modelsRefreshKey, setModelsRefreshKey] = useState(0);
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  // Desktop: hide the chat so the right panel takes its room (sidebar unchanged).
+  const [chatCollapsed, setChatCollapsed] = useState(false);
+  const updateChatCollapsed = useCallback((collapsed: boolean) => setChatCollapsed(collapsed), []);
   const [mobileSidebarReady, setMobileSidebarReady] = useState(false);
   const [sidebarWidth, setSidebarWidth] = useState<number>(SIDEBAR_DEFAULT_WIDTH);
   const [toolCallsDefaultCollapsed, setToolCallsDefaultCollapsed] = useState(true);
@@ -301,9 +310,6 @@ export function AppShell() {
       advanceAppUpdateVisibleStage(next);
     }
   }, [advanceAppUpdateVisibleStage]);
-  const [ompUpdateAvailable, setOmpUpdateAvailable] = useState(false);
-  // Bumped on visibilitychange so the mount-time update checks re-run.
-  const [updateCheckKey, setUpdateCheckKey] = useState(0);
   // On mobile the sidebar is an overlay drawer; hide it by default so the chat
   // is visible on load. Runs once the breakpoint resolves after hydration.
   useEffect(() => {
@@ -325,33 +331,6 @@ export function AppShell() {
       active.blur();
     }
   }, [sidebarOpen, mobileSidebarReady, sidebarContainerRef]);
-  useEffect(() => {
-    const controller = new AbortController();
-    void fetch("/api/omp-update", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "check" }),
-      signal: controller.signal,
-    })
-      .then((response) => response.ok ? response.json() : null)
-      .then((data: { updateAvailable?: boolean } | null) => {
-        // Background checks only update the settings badge. Keep update actions
-        // in Settings instead of interrupting startup or a return to this tab.
-        setOmpUpdateAvailable(Boolean(data?.updateAvailable));
-      })
-      .catch(() => {});
-    return () => controller.abort();
-  }, [updateCheckKey]);
-  useEffect(() => {
-    const recheck = () => {
-      if (document.visibilityState !== "visible") return;
-      // A transient failure on mount reads as "no update" forever otherwise;
-      // re-running the checks below on re-focus gives them another chance.
-      setUpdateCheckKey((key) => key + 1);
-    };
-    document.addEventListener("visibilitychange", recheck);
-    return () => document.removeEventListener("visibilitychange", recheck);
-  }, []);
   const refreshAppUpdate = useCallback(async (force = false, autoOpen = false): Promise<AppUpdateInfo | null> => {
     const data = await fetchAppUpdateJson<AppUpdateInfo>(
       force ? "/api/app-update?force=1" : "/api/app-update",
@@ -857,6 +836,37 @@ export function AppShell() {
     active: isCompactOverlay && rightPanelHasOpened && rightPanelOpen && !settingsTab,
   });
   const rightPanelIsModal = isCompactOverlay && rightPanelHasOpened && rightPanelOpen && !settingsTab;
+  /** The chat pane is collapsed and the (desktop) right panel fills its room. */
+  const chatHidden = chatCollapsed && rightPanelOpen && !isMobile && !isCompactOverlay && !settingsTab;
+  // Closing the right panel brings the chat back rather than leaving the collapse armed.
+  useEffect(() => {
+    if (!rightPanelOpen) setChatCollapsed(false);
+  }, [rightPanelOpen]);
+  // Web plugin page: a right-panel tab beside Explorer/Git/Terminal/System
+  // (kept mounted while another tab is shown, so it keeps its state).
+  const [openPlugin, setOpenPlugin] = useState<OpenPluginPage | null>(null);
+  const [pluginFrameKey, setPluginFrameKey] = useState(0);
+  useEffect(() => {
+    setOpenPlugin(readOpenPluginPage());
+  }, []);
+  useEffect(() => {
+    writeOpenPluginPage(openPlugin);
+  }, [openPlugin]);
+  const handleOpenPlugin = useCallback((plugin: WebPluginInfo) => {
+    setOpenPlugin((current) => current?.id === plugin.id && current.entryUrl === plugin.entryUrl
+      ? current
+      : { id: plugin.id, name: plugin.name, entryUrl: plugin.entryUrl, iconUrl: plugin.iconUrl });
+    setSettingsTab(null);
+    setRightView("plugin");
+    setRightPanelOpen(true);
+    if (isMobile) setSidebarOpen(false);
+  }, [isMobile]);
+  /** Close the plugin tab (any plugin, or only `id` when it is the open one). */
+  const handleClosePlugin = useCallback((id?: string) => {
+    setOpenPlugin((current) => (id === undefined || current?.id === id ? null : current));
+    setRightView((view) => (view === "plugin" ? "explorer" : view));
+  }, []);
+  const handleReloadPlugin = useCallback(() => setPluginFrameKey((key) => key + 1), []);
   const pendingRightPanelWidthRef = useRef<number | null>(null);
   const rightResizeHandlersRef = useRef<{ onMove: (ev: MouseEvent) => void; onUp: () => void } | null>(null);
   useEffect(() => {
@@ -960,7 +970,8 @@ export function AppShell() {
     // The branch panel manages its own outside-click and Escape dismissal.
     if (!activeTopPanel || activeTopPanel === "branches") return;
     const onPointerDown = (event: MouseEvent) => {
-      if (event.target instanceof Element && event.target.closest("[data-top-panel]")) return;
+      // InfoHint popups are portaled; clicking one stays inside the panel.
+      if (event.target instanceof Element && event.target.closest("[data-top-panel], .info-hint-popup")) return;
       setActiveTopPanel(null);
     };
     const onKeyDown = (event: KeyboardEvent) => {
@@ -1125,6 +1136,7 @@ export function AppShell() {
     // re-select, notification click) must not bump sessionKey: that remounts
     // ChatWindow, reconnects SSE, and drops the mid-run streaming view.
     setSettingsTab(null);
+    if (!isRestore) updateChatCollapsed(false);
     // Re-picking the current conversation still closes/rearms the drawer,
     // without remounting the chat or disturbing its draft.
     if (isMobile && !isRestore) {
@@ -1151,10 +1163,11 @@ export function AppShell() {
     if (!isRestore) {
       router.replace(`?session=${encodeURIComponent(session.id)}`, { scroll: false });
     }
-  }, [router, isMobile, selectedSession?.id]);
+  }, [router, isMobile, selectedSession?.id, updateChatCollapsed]);
 
   const showNewChat = useCallback((cwd: string) => {
     setSettingsTab(null);
+    updateChatCollapsed(false);
     setSelectedSession(null);
     setNewSessionCwd(cwd);
     setSessionKey((k) => k + 1);
@@ -1164,7 +1177,7 @@ export function AppShell() {
     setSystemPromptLoading(false);
     setActiveTopPanel(null);
     router.replace("/", { scroll: false });
-  }, [router]);
+  }, [router, updateChatCollapsed]);
 
   const handleNewSession = useCallback((_sessionId: string, cwd: string) => {
     showNewChat(cwd);
@@ -1213,22 +1226,28 @@ export function AppShell() {
 
   // Jump to where an attention item can be answered: its session shows the
   // pending dialog above the composer (replayed on connect).
-  const handleOpenAttention = useCallback(
-    (item: AttentionItem) => openSessionById(item.sessionId, item.cwd, item.sessionName),
-    [openSessionById],
-  );
+  // A sudo prompt is answered in its floating card wherever you are; other items need their chat.
+  const handleOpenAttention = useCallback((item: AttentionItem) => {
+    if (item.kind === "password") {
+      focusAskpassRequest(item.id);
+      return;
+    }
+    return openSessionById(item.sessionId, item.cwd, item.sessionName);
+  }, [openSessionById]);
 
   const handleOpenScheduledRun = useCallback((sessionId: string, cwd: string) => {
     void openSessionById(sessionId, cwd);
   }, [openSessionById]);
 
-  // A background tab gets an OS notification for each new dialog (sudo
-  // prompts notify from AskpassDialog). Never asks for permission here.
+  // New dialogs and sudo prompts chime once per batch (visible or not); a background tab
+  // also gets an OS notification for each new dialog (sudo prompts notify from
+  // AskpassDialog). Never asks for permission here.
   const notifiedAttentionRef = useRef<Set<string>>(new Set());
   useEffect(() => {
     const seen = notifiedAttentionRef.current;
     const current = new Set(attentionItems.map((item) => item.id));
     for (const id of seen) if (!current.has(id)) seen.delete(id);
+    if (attentionItems.some((item) => !seen.has(item.id))) playAttentionSound();
     for (const item of attentionItems) {
       if (seen.has(item.id)) continue;
       seen.add(item.id);
@@ -1527,22 +1546,16 @@ export function AppShell() {
   }, [handleOpenFile, requestOpenUrl, openFileAutomatically, selectedSession?.id, settingsTab]);
   const crossSessionHostToolRef = useRef(handleCrossSessionHostTool);
   useEffect(() => { crossSessionHostToolRef.current = handleCrossSessionHostTool; }, [handleCrossSessionHostTool]);
-  useEffect(() => {
+  useEffect(() => subscribeAppEvents({
     // Mounted with the shell (not the sidebar) so it keeps listening on the
     // full-page Settings view too.
-    const source = new EventSource("/api/agent/host-tools/events");
-    source.onmessage = (e) => {
-      try {
-        const call = JSON.parse(e.data) as CrossSessionHostToolCall & { type?: string };
-        if (call.type === "host_tool_call" && call.sessionId && call.id && call.toolName) {
-          void crossSessionHostToolRef.current({ sessionId: call.sessionId, cwd: call.cwd, id: call.id, toolName: call.toolName, arguments: call.arguments ?? {} });
-        }
-      } catch {
-        // ignore malformed frames
+    onFrame: (frame) => {
+      const call = frame as Partial<CrossSessionHostToolCall> & { type?: string };
+      if (call.type === "host_tool_call" && call.sessionId && call.id && call.toolName) {
+        void crossSessionHostToolRef.current({ sessionId: call.sessionId, cwd: call.cwd, id: call.id, toolName: call.toolName, arguments: call.arguments ?? {} });
       }
-    };
-    return () => source.close();
-  }, []);
+    },
+  }), []);
 
   // Explorer tab browses the active workspace: live cwd first, then the
   // selected / new-session cwd (mirrors what the sidebar used to pass down).
@@ -1812,6 +1825,7 @@ export function AppShell() {
       onCwdChange={handleCwdChange}
       onOpenWorkspace={handleOpenWorkspace}
       onAttentionChange={setSessionAttention}
+      onRunningCountChange={setRunningSessionCount}
       headerAccessory={attentionBell}
       onWorkspaceOptionsChange={handleWorkspaceOptionsChange}
       addProjectOpen={addProjectOpen}
@@ -1820,7 +1834,10 @@ export function AppShell() {
       settingsOpen={Boolean(settingsTab)}
       onOpenSettings={() => setSettingsTab((prev) => prev ? null : "general")}
       onOpenArchive={() => setArchiveBrowserOpen(true)}
-      updateAvailable={Boolean(appUpdate?.updateAvailable) || ompUpdateAvailable}
+      updateAvailable={Boolean(appUpdate?.updateAvailable)}
+      activePluginId={openPlugin?.id ?? null}
+      onOpenPlugin={handleOpenPlugin}
+      onClosePlugin={handleClosePlugin}
     />
   );
 
@@ -1934,10 +1951,10 @@ export function AppShell() {
     <WallpaperBackground />
     <a href="#main-content" className="skip-link">{t("appShell.skipToContent")}</a>
     <div className="wallpaper-shell" style={{ display: "flex", height: "100%", flex: 1, minHeight: 0, minWidth: 0, overflow: "hidden", background: "var(--bg)" }}>
-      {/* Left sidebar: hidden on full-page Settings */}
+      {/* Left sidebar: hidden on full-page Settings, but kept mounted. Remounting it
+          re-ran its first-load restore (the page's original ?session= or the top
+          project) and switched away from the open chat on leaving Settings. */}
       {!settingsTab && (
-        <>
-      {/* Mobile overlay backdrop */}
       <div
         className={`sidebar-overlay-backdrop${mobileSidebarReady ? "" : " sidebar-mobile-pending"}`}
         onClick={() => setSidebarOpen(false)}
@@ -1951,6 +1968,7 @@ export function AppShell() {
           transition: "opacity var(--dur-slow) var(--ease-out-warm)",
         }}
       />
+      )}
 
       <nav
         id="workspace-sidebar"
@@ -1965,7 +1983,7 @@ export function AppShell() {
         style={{
           background: "var(--bg-panel)",
           borderRight: "1px solid var(--border)",
-          display: "flex",
+          display: settingsTab ? "none" : "flex",
           flexDirection: "column",
           flexShrink: 0,
           zIndex: 200,
@@ -1977,7 +1995,7 @@ export function AppShell() {
       </nav>
 
       {/* Resize handle — desktop only, hidden while the sidebar is closed */}
-      {!isMobile && sidebarOpen && (
+      {!settingsTab && !isMobile && sidebarOpen && (
         <div
           className="sidebar-resize-handle"
           role="separator"
@@ -2004,11 +2022,22 @@ export function AppShell() {
           onBlur={(e) => { e.currentTarget.style.background = "transparent"; }}
         />
       )}
-        </>
-      )}
 
       {/* Center: chat */}
-      <main id="main-content" tabIndex={-1} inert={rightPanelIsModal ? true : undefined} style={{ flex: 1, display: "flex", flexDirection: "column", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
+      {chatHidden && (
+        <button
+          type="button"
+          className="chat-collapsed-rail wallpaper-surface ui-focus-ring"
+          onClick={() => updateChatCollapsed(false)}
+          title={t("appShell.showChat")}
+          aria-label={t("appShell.showChat")}
+          aria-controls="main-content"
+          aria-expanded={false}
+        >
+          <ChevronsRight size={16} strokeWidth={1.8} aria-hidden="true" />
+        </button>
+      )}
+      <main id="main-content" tabIndex={-1} inert={rightPanelIsModal || chatHidden ? true : undefined} style={{ flex: 1, display: chatHidden ? "none" : "flex", flexDirection: "column", minHeight: 0, minWidth: 0, overflow: "hidden" }}>
         {settingsTab ? (
           <SettingsConfig
             activeTab={settingsTab}
@@ -2028,9 +2057,7 @@ export function AppShell() {
             sessionId={selectedSession?.id ?? null}
             onModelsSaved={() => setModelsRefreshKey((k) => k + 1)}
             appUpdate={appUpdate}
-            ompUpdateAvailable={ompUpdateAvailable}
             onRefreshAppUpdate={refreshAppUpdate}
-            onOmpUpdateAvailabilityChange={setOmpUpdateAvailable}
             onRequestAppUpdate={requestAppUpdateFromSettings}
             onSelectTab={setSettingsTab}
             onClose={() => setSettingsTab(null)}
@@ -2062,6 +2089,19 @@ export function AppShell() {
             >
               {sidebarOpen ? <PanelLeft size={16} strokeWidth={1.8} aria-hidden="true" /> : <Menu size={16} strokeWidth={1.8} aria-hidden="true" />}
             </button>
+            {!isMobile && !isCompactOverlay && (
+              <button
+                type="button"
+                onClick={() => { setRightPanelOpen(true); updateChatCollapsed(true); }}
+                title={t("appShell.hideChat")}
+                aria-label={t("appShell.hideChat")}
+                aria-controls="main-content"
+                aria-expanded={true}
+                className="shell-toolbar-btn ui-focus-ring"
+              >
+                <ChevronsLeft size={16} strokeWidth={1.8} aria-hidden="true" />
+              </button>
+            )}
             <details
               ref={mobileToolsRef}
               className="shell-topbar-overflow"
@@ -2442,18 +2482,7 @@ export function AppShell() {
                         setActiveCwd(cwd);
                         handleNewSession("", cwd);
                       }}
-                      options={[
-                        { value: "", label: <>+ {t("projects.add")}</> },
-                        ...(!workspaceOptions.projects.some((project) => comparableProjectPath(project.path) === comparableProjectPath(newSessionProject)) ? [{ value: effectiveNewSessionCwd, label: projectLabel(effectiveNewSessionCwd) }] : []),
-                        ...workspaceOptions.projects.map((project) => {
-                        const current = comparableProjectPath(project.path) === comparableProjectPath(newSessionProject);
-                        const label = project.alias ?? projectLabel(project.path);
-                        const duplicate = workspaceOptions.projects.some((other) => other.path !== project.path && (other.alias ?? projectLabel(other.path)) === label);
-                        return (
-                          ({ value: current ? effectiveNewSessionCwd : project.path, label: duplicate ? `${label} — ${project.path}` : label })
-                        );
-                      }),
-                      ]}
+                      options={workspaceSelectOptions(workspaceOptions.projects, effectiveNewSessionCwd, newSessionProject, <>+ {t("projects.add")}</>)}
                     />
                   </div>
                   <div id="new-session-workspace-path" className="new-session-workspace-path wallpaper-surface" title={effectiveNewSessionCwd}>
@@ -2555,6 +2584,13 @@ export function AppShell() {
         rightView={rightView}
         onSelectView={handleSelectRightView}
         rightPanelOpen={rightPanelOpen && !settingsTab}
+        rightPanelFill={chatHidden}
+        openPlugin={openPlugin}
+        pluginFrameKey={pluginFrameKey}
+        onReloadPlugin={handleReloadPlugin}
+        currentSessionId={selectedSession?.id ?? null}
+        onOpenSession={handleOpenScheduledRun}
+        onClosePlugin={handleClosePlugin}
         rightPanelWidth={rightPanelWidth}
         rightPanelResizing={rightPanelResizing}
         rightPanelRef={rightPanelRef}
@@ -2624,7 +2660,7 @@ export function AppShell() {
       activity={!settingsTab && petActivity.sessionKey === (selectedSession?.id ?? effectiveNewSessionCwd ?? "") ? petActivity : { sessionKey: "", state: "idle" }}
       onSettings={() => { setAppearanceTab("pets"); setSettingsTab("appearance"); }}
     />}
-    <AppUpdateDialog open={appUpdateDialogOpen} update={appUpdate} phase={appUpdatePhase} visibleStage={appUpdateVisibleStage} error={appUpdateError} onProceed={() => void proceedWithAppUpdate()} onNotNow={dismissAppUpdate} />
+    <AppUpdateDialog open={appUpdateDialogOpen} update={appUpdate} phase={appUpdatePhase} visibleStage={appUpdateVisibleStage} error={appUpdateError} runningSessions={runningSessionCount} onProceed={() => void proceedWithAppUpdate()} onNotNow={dismissAppUpdate} />
     {archiveBrowserOpen && (
       <ArchiveBrowser
         open={archiveBrowserOpen}

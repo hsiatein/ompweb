@@ -1,18 +1,22 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useTransition, cloneElement, isValidElement, type ReactElement, type ReactNode } from "react";
-import { getSubmitDuringRunBehavior, getWordCompletionMode, setSubmitDuringRunBehavior, setWordCompletionMode, type SubmitDuringRunBehavior, type WordCompletionMode } from "@/lib/composer-prefs";
+import { getHideCompactedHistory, getSubmitDuringRunBehavior, getWordCompletionMode, setHideCompactedHistory, setSubmitDuringRunBehavior, setWordCompletionMode, type SubmitDuringRunBehavior, type WordCompletionMode } from "@/lib/composer-prefs";
+import { getTerminalCommandMode, getTerminalSshHost, setTerminalCommandMode, setTerminalSshHost, type TerminalCommandMode } from "@/lib/native-terminal-prefs";
 import { getWhaleTailMotion, setWhaleTailMotion, type WhaleTailMotion } from "@/lib/whale-tail";
 import { WhaleTailPicker } from "./WhaleTail";
 import dynamic from "next/dynamic";
-import { ArrowLeft, Copy, Download, ExternalLink, RefreshCw, RotateCcw, Search, Monitor, Play, Square, Trash2, X } from "lucide-react";
-import { Alert, Select } from "@/components/ui/field";
+import { ArrowLeft, Copy, Download, ExternalLink, KeyRound, Lock, RefreshCw, RotateCcw, Search, Monitor, Play, Square, Trash2, X } from "lucide-react";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/primitives";
+import { formatApiError } from "@/lib/i18n/api-error";
+import { Alert, Select, ToggleSwitch } from "@/components/ui/field";
 import { toast } from "@/components/ui/toast";
 import { useI18n } from "@/lib/i18n";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { SettingsTabs, type AppearanceTab, type ProvidersTab, type SettingsTab, SETTINGS_CATEGORIES } from "./SettingsTabs";
 import { copyText } from "@/lib/clipboard";
 import type { AppUpdateInfo } from "./AppUpdateDialog";
+import type { OmpUpdateStatus } from "@/lib/omp/updates";
 import { useFontSize, type FontSizePreference } from "@/hooks/useFontSize";
 import { useUiScale, type UiScalePreference } from "@/hooks/useUiScale";
 import { ALL_THEMES, useTheme, type ThemePreference } from "@/hooks/useTheme";
@@ -75,7 +79,6 @@ function SettingsSubTabs<T extends string>({ id, label, tabs, value, onChange, l
   );
 }
 
-type UpdateState = AppUpdateInfo;
 type WindowsServiceStatus = {
   isWindows: boolean;
   isInstalled: boolean;
@@ -100,6 +103,7 @@ type NativeSettings = {
   textVerbosity?: "low" | "medium" | "high";
   personality?: "default" | "friendly" | "pragmatic" | "none";
   advisor?: { enabled?: boolean; subagents?: boolean; syncBacklog?: "off" | "1" | "3" | "5"; immuneTurns?: number };
+  task?: { maxRecursionDepth?: number; maxConcurrency?: number };
   tools?: { approvalMode?: "always-ask" | "write" | "yolo"; approval?: { bash?: "allow" | "prompt" | "deny"; extension?: "allow" | "prompt" } };
   compaction?: { enabled?: boolean; midTurnEnabled?: boolean; strategy?: "snapcompact" | "handoff" | "context-full" | "shake" | "off"; autoContinue?: boolean; remoteEnabled?: boolean; keepRecentTokens?: number };
   memory?: { backend?: "off" | "local" | "mnemopi" | "hindsight" };
@@ -173,6 +177,7 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "shortcuts", tab: "general", generalTab: "shortcuts", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.general.shortcuts", descKey: "shortcuts.summary", fallbackSection: "Interface & Behavior", fallbackLabel: "Keyboard Shortcuts", fallbackDesc: "Customize, disable, and restore application shortcuts", scope: "UI" },
   { id: "completion-sound", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.completionSound", descKey: "settingsConfig.completionSoundDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Completion sound", fallbackDesc: "Play a tone when the agent completes a run.", scope: "UI" },
   { id: "keep-tool-calls-collapsed", tab: "general", generalTab: "layout", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.keepToolCallsCollapsed", descKey: "settingsConfig.keepToolCallsCollapsedDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Keep tool calls collapsed", fallbackDesc: "Show only compact headers while tools execute.", scope: "UI" },
+  { id: "hide-compacted-history", tab: "general", generalTab: "layout", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.hideCompactedHistory", descKey: "settingsConfig.hideCompactedHistoryDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Hide compacted messages by default", fallbackDesc: "Open sessions with the messages before their last compaction hidden. Each chat can still show or hide them with the button above its messages.", scope: "UI" },
   { id: "open-url-automatically", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.openUrlAutomatically", descKey: "settingsConfig.openUrlAutomaticallyDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Automatically open web links in the browser", fallbackDesc: "Links the agent opens from the session you are viewing open in a new tab right away. Links from other sessions always ask first. Your browser may still block pop-ups.", scope: "UI" },
   { id: "open-file-automatically", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.openFileAutomatically", descKey: "settingsConfig.openFileAutomaticallyDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Allow background sessions to open files in the side panel", fallbackDesc: "Allow agents from any session to open files in the side panel, leaving Settings if needed. Off by default; saved in this browser. File access and editing permissions are unchanged.", scope: "UI" },
   { id: "scope-native-select-all", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.scopeNativeSelectAll", descKey: "settingsConfig.scopeNativeSelectAllDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Scope native Select All (experimental)", fallbackDesc: "Limit whole-page selections from browser or touch menus to the active message, chat, or file. May also narrow deliberate whole-page selections. Turn off if selection handles or menus misbehave. Keyboard shortcuts are unaffected.", scope: "UI" },
@@ -183,6 +188,8 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "ui-scale", tab: "appearance", appearanceTab: "display", sectionKey: "settingsTabs.appearance.label", labelKey: "settingsConfig.uiScale", descKey: "settingsConfig.uiScaleDesc", fallbackSection: "Appearance & Personalization", fallbackLabel: "Interface Scale", fallbackDesc: "Adjust overall UI zoom and display density across sidebars, dialogs, buttons, and toolbars.", scope: "UI" },
   { id: "message-during-active-run", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.messageDuringActiveRun", descKey: "settingsConfig.messageDuringActiveRunDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Message during active run", fallbackDesc: "What composer does on submit while agent runs. Steer interrupts; Queue follow-up delivers after finish.", scope: "UI" },
   { id: "word-completion", tab: "general", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.wordCompletion", descKey: "settingsConfig.wordCompletionDesc", fallbackSection: "Interface & Behavior", fallbackLabel: "Word completion", fallbackDesc: "Ghost text from omp's word prediction; configure acceptance keys in Keyboard Shortcuts. Auto enables it only with a mouse or trackpad.", scope: "UI" },
+  { id: "terminal-command", tab: "general", generalTab: "behavior", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.terminalCommand", descKey: "settingsHint.terminalCommand", fallbackSection: "Interface & Behavior", fallbackLabel: "Terminal command", fallbackDesc: "What the workspace menu's Copy terminal command copies: cd into the directory, or an ssh command for another computer. Auto picks cd when this page is opened via localhost.", scope: "UI" },
+  { id: "terminal-command-ssh-host", tab: "general", generalTab: "behavior", sectionKey: "settingsConfig.interfaceBehavior", labelKey: "settingsConfig.terminalCommandSshHost", descKey: "settingsHint.terminalCommandSshHost", fallbackSection: "Interface & Behavior", fallbackLabel: "SSH host for terminal command", fallbackDesc: "Host alias from this computer's ~/.ssh/config, or user@host.", scope: "UI" },
   { id: "whale-tail", tab: "appearance", appearanceTab: "motion", sectionKey: "settingsTabs.appearance.label", labelKey: "settingsConfig.whaleTail", descKey: "settingsConfig.whaleTailDesc", fallbackSection: "Appearance & Personalization", fallbackLabel: "Whale tail animation", fallbackDesc: "How the whale tail moves beside the running status and the live thinking row.", scope: "UI" },
   { id: "theme", tab: "appearance", appearanceTab: "display", sectionKey: "settingsTabs.appearance.label", labelKey: "settingsConfig.theme", descKey: "settingsConfig.themeDesc", fallbackSection: "Appearance & Personalization", fallbackLabel: "Visual theme", fallbackDesc: "Choose a light or dark theme, or follow the system appearance.", scope: "UI" },
   { id: "wallpapers", tab: "appearance", appearanceTab: "wallpapers", sectionKey: "settingsTabs.appearance.label", labelKey: "settingsConfig.appearance.wallpapers", descKey: "settingsConfig.wallpapersDesc", fallbackSection: "Appearance & Personalization", fallbackLabel: "Wallpapers & Glass", fallbackDesc: "Wallpaper images, videos, glass effects, colors, brightness, and background audio.", scope: "UI" },
@@ -214,8 +221,11 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "max-attempts", tab: "agents", agentTab: "runtime", sectionKey: "settingsConfig.automaticRetry", labelKey: "settingsConfig.maxAttempts", descKey: "settingsConfig.maxAttemptsDesc", fallbackSection: "Automatic Retry", fallbackLabel: "Max Attempts", fallbackDesc: "Retry limit before giving up.", scope: "Native OMP" },
   { id: "model-fallback", tab: "agents", agentTab: "runtime", sectionKey: "settingsConfig.automaticRetry", labelKey: "settingsConfig.modelFallback", descKey: "settingsConfig.modelFallbackDesc", fallbackSection: "Automatic Retry", fallbackLabel: "Model Fallback", fallbackDesc: "Fall back to alternative model when retries exhaust.", scope: "Native OMP" },
   // Agents
-  { id: "agent-instructions", tab: "agents", agentTab: "instructions", sectionKey: "settingsTabs.agents.label", labelKey: "agentInstructions.title", descKey: "agentInstructions.description", fallbackSection: "Agents & Policies", fallbackLabel: "Custom instructions", fallbackDesc: "System prompt rules: model overrides provider overrides global.", scope: "UI" },
+  { id: "agent-instructions", tab: "agents", agentTab: "instructions", sectionKey: "settingsTabs.agents.label", labelKey: "agentInstructions.title", descKey: "agentInstructions.description", fallbackSection: "Agents & Policies", fallbackLabel: "Custom instructions", fallbackDesc: "System prompt rules: model, provider, global; each rule replaces or appends to broader ones.", scope: "UI" },
   { id: "agent-roster", tab: "agents", agentTab: "subagents", sectionKey: "settingsTabs.agents.label", labelKey: "settingsConfig.agents.subagents", descKey: "settingsConfig.agentsDesc", fallbackSection: "Agents & Policies", fallbackLabel: "Subagents", fallbackDesc: "Browse enabled agents filtered by name and source.", scope: "Native OMP" },
+  { id: "subagents-enabled", tab: "agents", agentTab: "subagents", sectionKey: "settingsTabs.agents.label", labelKey: "settingsConfig.subagentsEnabled", descKey: "settingsConfig.subagentsEnabledDesc", fallbackSection: "Agents & Policies", fallbackLabel: "Allow subagents", fallbackDesc: "Allow task and Eval delegation in newly started OMP sessions.", scope: "Native OMP" },
+  { id: "subagents-depth", tab: "agents", agentTab: "subagents", sectionKey: "settingsTabs.agents.label", labelKey: "settingsConfig.subagentsDepth", descKey: "settingsConfig.subagentsDepthDesc", fallbackSection: "Agents & Policies", fallbackLabel: "Maximum subagent depth", fallbackDesc: "Maximum nested delegation depth.", scope: "Native OMP" },
+  { id: "subagents-concurrency", tab: "agents", agentTab: "subagents", sectionKey: "settingsTabs.agents.label", labelKey: "settingsConfig.subagentsConcurrency", descKey: "settingsConfig.subagentsConcurrencyDesc", fallbackSection: "Agents & Policies", fallbackLabel: "Maximum concurrent subagents", fallbackDesc: "Concurrent subagent limit per parent.", scope: "Native OMP" },
   { id: "agent-model", tab: "agents", agentTab: "subagents", sectionKey: "settingsTabs.agents.label", labelKey: "agentsConfig.modelRoles", descKey: "modelsConfig.modelRolesDesc", fallbackSection: "Agents & Policies", fallbackLabel: "Agent model", fallbackDesc: "Model mapping and reasoning effort per agent role.", scope: "Native OMP" },
   { id: "agent-tools", tab: "agents", agentTab: "subagents", sectionKey: "settingsTabs.agents.label", labelKey: "agentsConfig.tools", descKey: "settingsConfig.agentsDesc", fallbackSection: "Agents & Policies", fallbackLabel: "Agent tools", fallbackDesc: "Allowed tools and delegated task prompt per agent.", scope: "Native OMP" },
   // Extensions & Skills
@@ -232,6 +242,7 @@ const SETTING_INDEX: SettingIndexEntry[] = [
   { id: "model-breakdown", tab: "usage", sectionKey: "settingsTabs.usage.label", labelKey: "usageConfig.breakdown", descKey: "usageConfig.model", fallbackSection: "Usage", fallbackLabel: "Model Breakdown", fallbackDesc: "Historical token usage and cost per model, day, and project", scope: "UI" },
   // Windows Background Service & System Tray
   { id: "auto-resume-sessions", tab: "system", sectionKey: "settingsConfig.systemUpdates", labelKey: "settingsConfig.autoResumeSessions", descKey: "settingsConfig.autoResumeSessionsDesc", fallbackSection: "System & Updates", fallbackLabel: "Resume running sessions after a restart", fallbackDesc: "When omp-web restarts while agents are working, restart those sessions and tell each agent: \"Session interrupted and resumed. Continue as you would have done without the interruption.\" Work in progress at the moment of the restart, such as a running command, is lost." },
+  { id: "sudo-auto-answer", tab: "system", sectionKey: "settingsConfig.systemUpdates", labelKey: "settingsConfig.sudoAuto", descKey: "settingsHint.sudoAuto", fallbackSection: "System & Updates", fallbackLabel: "Answer sudo automatically", fallbackDesc: "Agents' sudo commands get your password without asking until you turn this off or omp-web restarts. Turning it on asks for the password once." },
   { id: "windows-service-autostart", tab: "system", sectionKey: "settingsConfig.windowsServiceTitle", labelKey: "settingsConfig.windowsServiceAutostart", descKey: "settingsConfig.windowsServiceAutostartDesc", fallbackSection: "Windows Background Service & System Tray", fallbackLabel: "Start with Windows", fallbackDesc: "Launch background service quietly in system tray when logging into Windows.", scope: "UI" },
   { id: "windows-service-shortcuts", tab: "system", sectionKey: "settingsConfig.windowsServiceTitle", labelKey: "settingsConfig.windowsServiceInstallBtn", descKey: "settingsConfig.windowsServiceDesc", fallbackSection: "Windows Background Service & System Tray", fallbackLabel: "Install Service & Shortcuts", fallbackDesc: "Manage background service execution, system tray monitor, Windows logon autostart, and Desktop shortcuts.", scope: "UI" },
 ];
@@ -239,13 +250,6 @@ const SETTING_INDEX: SettingIndexEntry[] = [
 function SearchResultsList({ results, query, onSelect }: { results: SearchResult[]; query: string; onSelect: (result: SearchResult) => void }) {
   const { t, tn } = useI18n();
   const isMobile = useIsMobile();
-  const formatScope = (s?: string) => {
-    if (s === "UI") return t("settingsConfig.chipUI");
-    if (s === "Native OMP") return t("settingsConfig.chipNativeOMP");
-    if (s === "Workspace") return t("settingsConfig.chipWorkspace");
-    return s;
-  };
-
   return (
     <div style={{ flex: 1, minHeight: 0, overflowY: "auto", background: "var(--bg)", padding: isMobile ? "16px 14px 32px" : "32px 24px 64px" }}>
       <div className="settings-panel-inner" style={{ gap: 12 }}>
@@ -276,8 +280,8 @@ function SearchResultsList({ results, query, onSelect }: { results: SearchResult
                 {result.kind === "category" && (
                   <span style={chipStyle}>{t("settingsConfig.chipSection")}</span>
                 )}
-                {result.scope && (
-                  <span style={chipStyle}>{formatScope(result.scope)}</span>
+                {result.scope === "UI" && (
+                  <span style={chipStyle}>{t("settingsConfig.deviceOnly")}</span>
                 )}
               </div>
               <div style={{ fontSize: "var(--text-sm)", color: "var(--text-muted)", lineHeight: 1.45 }}>{result.description}</div>
@@ -287,78 +291,6 @@ function SearchResultsList({ results, query, onSelect }: { results: SearchResult
         </div>
       </div>
     </div>
-  );
-}
-
-function ToggleSwitch({
-  checked,
-  onChange,
-  disabled,
-  id,
-  "aria-label": ariaLabel,
-  "aria-labelledby": ariaLabelledBy,
-  "aria-describedby": ariaDescribedBy,
-}: {
-  checked: boolean;
-  onChange: (checked: boolean) => void;
-  disabled?: boolean;
-  id?: string;
-  "aria-label"?: string;
-  "aria-labelledby"?: string;
-  "aria-describedby"?: string;
-}) {
-  return (
-    <button
-      id={id}
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={ariaLabel}
-      aria-labelledby={ariaLabelledBy}
-      aria-describedby={ariaDescribedBy}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className="ui-focus-ring"
-      style={{
-        position: "relative",
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        width: 44,
-        height: 44,
-        padding: 0,
-        border: "none",
-        background: "transparent",
-        cursor: disabled ? "not-allowed" : "pointer",
-        flexShrink: 0,
-      }}
-    >
-      <span
-        aria-hidden="true"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          width: 40,
-          height: 24,
-          padding: 2,
-          borderRadius: 12,
-          background: checked ? "var(--accent-strong)" : "var(--border)",
-          transition: "background var(--dur-fast)",
-        }}
-      >
-        <span
-          style={{
-            width: 20,
-            height: 20,
-            borderRadius: 10,
-            background: "#fff",
-            transform: checked ? "translateX(16px)" : "translateX(0px)",
-            transition: "transform var(--dur-fast)",
-            boxShadow: "0 1px 3px rgba(0,0,0,0.2)",
-          }}
-        />
-      </span>
-    </button>
   );
 }
 
@@ -390,13 +322,189 @@ function AutoResumeSessionsSetting() {
     }
   };
   return (
-    <NativeSetting searchId="auto-resume-sessions" label={t("settingsConfig.autoResumeSessions")} description={t("settingsConfig.autoResumeSessionsDesc")}>
+    <NativeSetting searchId="auto-resume-sessions" label={t("settingsConfig.autoResumeSessions")} description={t("settingsHint.autoResumeSessions")}>
       <ToggleSwitch checked={enabled === true} disabled={enabled === null} onChange={(next) => void change(next)} />
     </NativeSetting>
   );
 }
 
-function NativeSetting({ label, description, scope, searchId, children }: { label: string; description: string; scope?: "UI" | "Native OMP" | "Workspace"; searchId?: string; children: ReactNode }) {
+/**
+ * Answer agents' sudo prompts automatically (lib/askpass.ts). Turning it on
+ * asks for the sudo password once; the server verifies it and keeps it in
+ * memory until this is turned off or omp-web restarts.
+ */
+function SudoAutoAnswerSetting() {
+  const { t } = useI18n();
+  const [status, setStatus] = useState<{ supported: boolean; enabled: boolean } | null>(null);
+  const [asking, setAsking] = useState(false);
+  const [password, setPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/askpass/auto")
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { supported?: boolean; enabled?: boolean } | null) => {
+        if (alive) setStatus({ supported: data?.supported === true, enabled: data?.enabled === true });
+      })
+      .catch(() => { if (alive) setStatus({ supported: false, enabled: false }); });
+    return () => { alive = false; };
+  }, []);
+  const put = async (body: { enabled: true; password: string } | { enabled: false }) => {
+    const res = await fetch("/api/askpass/auto", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => null) as { enabled?: boolean; error?: string; code?: string } | null;
+    if (!res.ok) throw new Error(formatApiError(data));
+    return data?.enabled === true;
+  };
+  const closeDialog = () => { setAsking(false); setPassword(""); setError(null); };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (busy || !password) return;
+    setBusy(true);
+    try {
+      const enabled = await put({ enabled: true, password });
+      setStatus((previous) => previous && { ...previous, enabled });
+      closeDialog();
+    } catch (failure) {
+      setPassword("");
+      setError(failure instanceof Error ? failure.message : String(failure));
+    } finally { setBusy(false); }
+  };
+  const change = async (next: boolean) => {
+    if (next) { setAsking(true); return; }
+    try {
+      await put({ enabled: false });
+      setStatus((previous) => previous && { ...previous, enabled: false });
+    } catch (failure) {
+      toast.error(t("settingsConfig.sudoAutoSaveFailed"), failure instanceof Error ? failure.message : String(failure));
+    }
+  };
+  if (status && !status.supported) return null;
+  return (
+    <>
+      <NativeSetting searchId="sudo-auto-answer" label={t("settingsConfig.sudoAuto")} description={t("settingsHint.sudoAuto")}>
+        <ToggleSwitch checked={status?.enabled === true} disabled={status === null} onChange={(next) => void change(next)} />
+      </NativeSetting>
+      {asking && (
+        <Dialog open onOpenChange={(open) => { if (!open && !busy) closeDialog(); }}>
+          <DialogContent ariaLabel={t("settingsConfig.sudoAuto")} className="askpass-dialog" style={{ width: 460 }}>
+            <DialogTitle style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <KeyRound size={18} aria-hidden="true" />
+              {t("settingsConfig.sudoAuto")}
+            </DialogTitle>
+            <form onSubmit={(event) => void submit(event)}>
+              <label className="askpass-label" htmlFor="sudo-auto-password">{t("settingsConfig.sudoAutoPassword")}</label>
+              <input
+                id="sudo-auto-password"
+                className="askpass-input"
+                type="password"
+                value={password}
+                onChange={(event) => { setPassword(event.target.value); setError(null); }}
+                autoComplete="off"
+                autoFocus
+                disabled={busy}
+              />
+              {error && <p role="alert" className="askpass-error">{error}</p>}
+              <p className="askpass-note">
+                <Lock size={12} aria-hidden="true" />
+                <span>{t("settingsConfig.sudoAutoNote")}</span>
+              </p>
+              <div className="askpass-actions">
+                <button type="button" onClick={closeDialog} disabled={busy}>{t("settingsConfig.sudoAutoCancel")}</button>
+                <button type="submit" className="askpass-submit" disabled={busy || !password}>{t("settingsConfig.sudoAutoEnable")}</button>
+              </div>
+            </form>
+          </DialogContent>
+        </Dialog>
+      )}
+    </>
+  );
+}
+
+function SubagentAccessSetting() {
+  const { t } = useI18n();
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
+  const [reload, setReload] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    fetch("/api/web-settings", { signal: AbortSignal.timeout(12000) })
+      .then((response) => response.ok ? response.json() : Promise.reject(new Error(`HTTP ${response.status}`)))
+      .then((data: { subagentsEnabled?: boolean }) => {
+        if (alive) { setEnabled(data.subagentsEnabled === true); setLoadFailed(false); }
+      })
+      .catch(() => { if (alive) setLoadFailed(true); });
+    return () => { alive = false; };
+  }, [reload]);
+  const change = async (next: boolean) => {
+    const previous = enabled;
+    setEnabled(next);
+    setSaving(true);
+    try {
+      const response = await fetch("/api/web-settings", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ subagentsEnabled: next }),
+      });
+      const data = await response.json() as { error?: string };
+      if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    } catch (error) {
+      setEnabled(previous);
+      toast.error(t("settingsConfig.subagentsSaveFailed"), error instanceof Error ? error.message : String(error));
+    } finally { setSaving(false); }
+  };
+  return (
+    <>
+      <NativeSetting searchId="subagents-enabled" label={t("settingsConfig.subagentsEnabled")}>
+        <ToggleSwitch checked={enabled === true} disabled={enabled === null || saving} onChange={(next) => void change(next)} />
+      </NativeSetting>
+      {loadFailed && <button type="button" className="settings-back" onClick={() => setReload((value) => value + 1)}>{t("chatWindow.retry")}</button>}
+    </>
+  );
+}
+
+function NativeIntegerInput({ value, minimum, onCommit, ...attributes }: Omit<React.InputHTMLAttributes<HTMLInputElement>, "value" | "onChange" | "defaultValue" | "onBlur"> & {
+  value: number; minimum: number; onCommit: (value: number) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <input {...attributes} key={value} type="number" defaultValue={value} min={minimum} step={1}
+      style={{ width: 96, maxWidth: "100%", padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", color: "var(--text)", fontSize: "var(--text-sm)" }}
+      onBlur={(event) => {
+        const next = Number(event.currentTarget.value);
+        if (!event.currentTarget.value.trim() || !Number.isSafeInteger(next) || next < minimum) {
+          event.currentTarget.value = String(value);
+          toast.error(t("settingsConfig.subagentsInvalidLimit", { minimum }));
+          return;
+        }
+        if (next !== value) onCommit(next);
+      }}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter" && event.key !== "Escape") return;
+        event.preventDefault();
+        event.stopPropagation();
+        if (event.key === "Escape") event.currentTarget.value = String(value);
+        event.currentTarget.blur();
+      }}
+    />
+  );
+}
+
+/**
+ * Settings that only matter while their parent is on: indented under it and dimmed + inert when it is off, so the
+ * relation needs no "only applies when …" sentence. Kept mounted so search can still scroll to them.
+ */
+function DependentSettings({ active, label, children }: { active: boolean; label?: string; children: ReactNode }) {
+  return (
+    <div className="settings-dependent" data-active={active ? "true" : "false"} inert={!active}>
+      {label && <div className="settings-dependent-label">{label}</div>}
+      {children}
+    </div>
+  );
+}
+
+/** One setting row. `description` is shown only when the label and control cannot say it (search still matches SETTING_INDEX text). */
+function NativeSetting({ label, description, scope, searchId, children }: { label: string; description?: string; scope?: "UI" | "Native OMP" | "Workspace"; searchId?: string; children: ReactNode }) {
   const { t } = useI18n();
   const ref = useRef<HTMLDivElement>(null);
   const highlightId = useContext(SettingsHighlightContext);
@@ -405,13 +513,6 @@ function NativeSetting({ label, description, scope, searchId, children }: { labe
   const settingId = 'setting-' + settingSlug;
   const labelId = 'setting-label-' + settingSlug;
   const descId = 'setting-desc-' + settingSlug;
-
-  const formatScope = (s?: string) => {
-    if (s === "UI") return t("settingsConfig.chipUI");
-    if (s === "Native OMP") return t("settingsConfig.chipNativeOMP");
-    if (s === "Workspace") return t("settingsConfig.chipWorkspace");
-    return s;
-  };
 
   useEffect(() => {
     if (highlighted && ref.current) {
@@ -425,7 +526,7 @@ function NativeSetting({ label, description, scope, searchId, children }: { labe
     enhancedChild = cloneElement(children as ReactElement<EnhancedChildProps>, {
       id: childProps.id || settingId,
       "aria-labelledby": childProps["aria-labelledby"] || labelId,
-      "aria-describedby": childProps["aria-describedby"] || descId,
+      "aria-describedby": childProps["aria-describedby"] || (description ? descId : undefined),
       "aria-label": childProps["aria-label"] || label,
     });
   }
@@ -445,22 +546,19 @@ function NativeSetting({ label, description, scope, searchId, children }: { labe
       }}
     >
       <div className="settings-card-text">
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: description ? 4 : 0 }}>
           <label id={labelId} htmlFor={settingId} className="settings-card-title" style={{ cursor: "pointer" }}>{label}</label>
-          {scope && (
-            <span style={chipStyle}>
-              {formatScope(scope)}
-            </span>
-          )}
+          {/* Browser-local settings do not follow you to other devices (web on the computer, the App on the phone). */}
+          {scope === "UI" && <span style={chipStyle}>{t("settingsConfig.deviceOnly")}</span>}
         </div>
-        <span id={descId} className="settings-card-desc">{description}</span>
+        {description && <span id={descId} className="settings-card-desc">{description}</span>}
       </div>
       <span className="settings-card-control">{enhancedChild}</span>
     </div>
   );
 }
 
-export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange, toolCallsDefaultCollapsed, onToolCallsDefaultCollapsedChange, providerUsageVisible, onProviderUsageVisibleChange, scopeNativeSelectAll, onScopeNativeSelectAllChange, openUrlAutomatically, onOpenUrlAutomaticallyChange, openFileAutomatically, onOpenFileAutomaticallyChange, cwd, sessionId, onModelsSaved, appUpdate, ompUpdateAvailable, onRefreshAppUpdate, onOmpUpdateAvailabilityChange, onRequestAppUpdate, onSelectTab, onClose }: {
+export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange, toolCallsDefaultCollapsed, onToolCallsDefaultCollapsedChange, providerUsageVisible, onProviderUsageVisibleChange, scopeNativeSelectAll, onScopeNativeSelectAllChange, openUrlAutomatically, onOpenUrlAutomaticallyChange, openFileAutomatically, onOpenFileAutomaticallyChange, cwd, sessionId, onModelsSaved, appUpdate, onRefreshAppUpdate, onRequestAppUpdate, onSelectTab, onClose }: {
   activeTab: SettingsTab;
   appearanceTab: AppearanceTab;
   onAppearanceTabChange: (tab: AppearanceTab) => void;
@@ -478,9 +576,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
   sessionId: string | null;
   onModelsSaved: () => void;
   appUpdate: AppUpdateInfo | null;
-  ompUpdateAvailable?: boolean;
   onRefreshAppUpdate: (force?: boolean) => Promise<AppUpdateInfo | null>;
-  onOmpUpdateAvailabilityChange: (available: boolean) => void;
   onRequestAppUpdate: () => void;
   onSelectTab: (tab: SettingsTab) => void;
   onClose: () => void;
@@ -506,6 +602,9 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
   const [agentTab, setAgentTab] = useState<AgentTab>("instructions");
   const [submitBehavior, setSubmitBehavior] = useState<SubmitDuringRunBehavior>(() => getSubmitDuringRunBehavior());
   const [wordCompletion, setWordCompletion] = useState<WordCompletionMode>(() => getWordCompletionMode());
+  const [hideCompactedHistory, setHideCompactedHistoryState] = useState(() => getHideCompactedHistory());
+  const [terminalCommandMode, setTerminalCommandModeState] = useState<TerminalCommandMode>(() => getTerminalCommandMode());
+  const [terminalSshHost, setTerminalSshHostState] = useState(() => getTerminalSshHost());
   const [whaleTail, setWhaleTail] = useState<WhaleTailMotion>(() => getWhaleTailMotion());
   const [soundEnabled, setSoundEnabled] = useState<boolean>(() => {
     if (typeof window === "undefined") return true;
@@ -516,22 +615,20 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
       return true;
     }
   });
-  const [update, setUpdate] = useState<UpdateState | null>(null);
+  const [update, setUpdate] = useState<OmpUpdateStatus | null>(null);
   const [checking, setChecking] = useState(false);
   const [checkingAppUpdate, setCheckingAppUpdate] = useState(false);
   const [appUpdateMessage, setAppUpdateMessage] = useState<string | null>(null);
   const [hasCheckedUpdates, setHasCheckedUpdates] = useState(false);
-  const [ompUpdating, setOmpUpdating] = useState(false);
   const [restarting, setRestarting] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [windowsService, setWindowsService] = useState<WindowsServiceStatus | null>(null);
   const [loadingWindowsService, setLoadingWindowsService] = useState(false);
   const [windowsServiceActionPending, setWindowsServiceActionPending] = useState(false);
 
-  const ompUpdateIsAvailable = Boolean(ompUpdateAvailable || update?.updateAvailable);
   const appUpdateIsAvailable = Boolean(appUpdate?.updateAvailable);
   const appUpdatesDisabled = Boolean(appUpdate?.updatesDisabled);
-  const systemNeedsAttention = appUpdateIsAvailable || ompUpdateIsAvailable;
+  const systemNeedsAttention = appUpdateIsAvailable;
 
   const attentionTabs = useMemo<Partial<Record<SettingsTab, boolean | string>>>(() => {
     const tabs: Partial<Record<SettingsTab, boolean | string>> = {};
@@ -655,21 +752,20 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
     void saveNativeSettings({ ...base, tools: { ...tools, approval: { ...(tools.approval ?? {}), ...patch } } });
   }, [nativeSettings, saveNativeSettings]);
 
-  const checkForUpdate = useCallback(async (force = false) => {
+  const refreshRuntimeVersion = useCallback(async () => {
     setChecking(true);
     setMessage(null);
     try {
-      const response = await fetch("/api/omp-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "check", ...(force ? { force: true } : {}) }) });
-      const data = (await response.json()) as UpdateState & { error?: string };
+      const response = await fetch("/api/omp-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "check" }) });
+      const data = (await response.json()) as OmpUpdateStatus & { error?: string };
       if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
       setUpdate(data);
-      onOmpUpdateAvailabilityChange(data.updateAvailable);
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
     } finally {
       setChecking(false);
     }
-  }, [onOmpUpdateAvailabilityChange]);
+  }, []);
 
   const checkForAppUpdate = useCallback(async (force = false) => {
     if (appUpdatesDisabled) return;
@@ -688,8 +784,10 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
     setRestarting(true);
     try {
       const response = await fetch("/api/omp-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "restart" }) });
-      const data = (await response.json()) as { error?: string; sessionsRestarted?: number };
-      if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
+      const data = (await response.json()) as { error?: string; code?: string; sessionsRestarted?: number };
+      if (!response.ok || data.error) {
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
       setMessage(t("settingsConfig.restartSuccess", { count: data.sessionsRestarted ?? 0 }));
     } catch (error) {
       setMessage(error instanceof Error ? error.message : String(error));
@@ -697,39 +795,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
       setRestarting(false);
     }
   }, [t]);
-  const handleOmpUpdateNow = useCallback(async () => {
-    if (ompUpdating) return;
-    setOmpUpdating(true);
-    setMessage(null);
-    try {
-      const prepRes = await fetch("/api/omp-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "update" }) });
-      const prepData = (await prepRes.json()) as { attemptId?: string; error?: string; code?: string };
-      if (!prepRes.ok || !prepData.attemptId) throw new Error(prepData.error || `HTTP ${prepRes.status}`);
-      const commitRes = await fetch("/api/omp-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "commit", attemptId: prepData.attemptId }) });
-      const commitData = (await commitRes.json()) as { error?: string };
-      if (!commitRes.ok) throw new Error(commitData.error || `HTTP ${commitRes.status}`);
-      const deadline = Date.now() + 5 * 60 * 1000;
-      while (true) {
-        if (Date.now() > deadline) throw new Error(t("settingsConfig.ompUpdateFailed"));
-        await new Promise((r) => setTimeout(r, 500));
-        const statusRes = await fetch("/api/omp-update", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "status" }) });
-        const status = (await statusRes.json()) as { state?: string; error?: string } | null;
-        if (!status) break;
-        if (status.state === "succeeded") {
-          // Running agents keep the old binary; each session moves to the new
-          // one at its next prompt (rpc-manager restarts idle children lazily).
-          setMessage(t("settingsConfig.ompUpdateSuccess"));
-          await checkForUpdate(true);
-          break;
-        }
-        if (status.state === "failed") throw new Error(status.error || t("settingsConfig.ompUpdateFailed"));
-      }
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error));
-    } finally {
-      setOmpUpdating(false);
-    }
-  }, [ompUpdating, t, checkForUpdate]);
 
 
   const currentTab = activeTab;
@@ -743,8 +808,8 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
   useEffect(() => {
     if (currentTab !== "system" || hasCheckedUpdates) return;
     setHasCheckedUpdates(true);
-    void checkForUpdate();
-  }, [currentTab, hasCheckedUpdates, checkForUpdate]);
+    void refreshRuntimeVersion();
+  }, [currentTab, hasCheckedUpdates, refreshRuntimeVersion]);
 
   const trimmedQuery = searchQuery.trim().toLowerCase();
   const searchActive = trimmedQuery.length > 0;
@@ -941,7 +1006,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
               <div role="tabpanel" id="settings-panel-appearance" aria-labelledby="settings-tab-appearance" className="settings-panel-inner" style={{ padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16, width: "100%", maxWidth: 1080 }}>
                 <div>
                   <h2 className="display-serif" style={{ fontSize: "var(--text-2xl)", fontWeight: 600, margin: 0, color: "var(--text)" }}>{t("settingsTabs.appearance.label")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 0", fontSize: "var(--text-md)", color: "var(--text-muted)" }}>{t("settingsTabs.appearance.description")}</p>
                 </div>
                 <SettingsSubTabs
                   id="appearance" label={t("settingsTabs.appearance.label")}
@@ -952,7 +1016,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                 <div role="tabpanel" id={`appearance-panel-${appearanceTab}`} aria-labelledby={`appearance-tab-${appearanceTab}`} style={{ minWidth: 0 }}>
                   {appearanceTab === "display" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      <NativeSetting searchId="theme" label={t("settingsConfig.theme")} description={t("settingsConfig.themeDesc")} scope="UI">
+                      <NativeSetting searchId="theme" label={t("settingsConfig.theme")} scope="UI">
                         <Select
                           style={selectStyle}
                           value={themePreference}
@@ -963,7 +1027,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                           ]}
                         />
                       </NativeSetting>
-                      <NativeSetting searchId="chat-font-size" label={t("settingsConfig.chatFontSize")} description={t("settingsConfig.chatFontSizeDesc")} scope="UI">
+                      <NativeSetting searchId="chat-font-size" label={t("settingsConfig.chatFontSize")} scope="UI">
                         <Select
                           style={selectStyle}
                           value={fontSize}
@@ -976,7 +1040,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                           ]}
                         />
                       </NativeSetting>
-                      <NativeSetting searchId="ui-scale" label={t("settingsConfig.uiScale")} description={t("settingsConfig.uiScaleDesc")} scope="UI">
+                      <NativeSetting searchId="ui-scale" label={t("settingsConfig.uiScale")} scope="UI">
                         <Select
                           style={selectStyle}
                           value={uiScale}
@@ -995,7 +1059,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                   {appearanceTab === "pets" && <PetsConfig />}
                   {appearanceTab === "motion" && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      <NativeSetting searchId="whale-tail" label={t("settingsConfig.whaleTail")} description={t("settingsConfig.whaleTailDesc")} scope="UI">
+                      <NativeSetting searchId="whale-tail" label={t("settingsConfig.whaleTail")} scope="UI">
                         <WhaleTailPicker
                           value={whaleTail}
                           labelFor={(motion) => t(`settingsConfig.whaleTail.${motion}`)}
@@ -1014,7 +1078,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
               <div role="tabpanel" id="settings-panel-general" aria-labelledby="settings-tab-general" className="settings-panel-inner" style={{ padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16, width: "100%", maxWidth: 1080 }}>
                 <div style={{ marginBottom: 4 }}>
                   <h2 className="display-serif" style={{ fontSize: "var(--text-2xl)", fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("settingsConfig.interfaceBehavior")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 0", fontSize: "var(--text-md)", color: "var(--text-muted)", lineHeight: 1.45 }}>{t("settingsConfig.interfaceBehaviorDesc")}</p>
                 </div>
                 <SettingsSubTabs
                   id="general" label={t("settingsTabs.general.label")}
@@ -1024,26 +1087,29 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                 />
                 {generalTab === "layout" && (
                 <div role="tabpanel" id="general-panel-layout" aria-labelledby="general-tab-layout" style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-                  <NativeSetting searchId="keep-tool-calls-collapsed" label={t("settingsConfig.keepToolCallsCollapsed")} description={t("settingsConfig.keepToolCallsCollapsedDesc")} scope="UI">
+                  <NativeSetting searchId="keep-tool-calls-collapsed" label={t("settingsConfig.keepToolCallsCollapsed")} scope="UI">
                     <ToggleSwitch checked={toolCallsDefaultCollapsed} onChange={onToolCallsDefaultCollapsedChange} />
                   </NativeSetting>
-                  <NativeSetting searchId="provider-usage" label={t("settingsConfig.providerUsage")} description={t("settingsConfig.providerUsageDesc")} scope="UI">
+                  <NativeSetting searchId="hide-compacted-history" label={t("settingsConfig.hideCompactedHistory")} description={t("settingsConfig.hideCompactedHistoryDesc")} scope="UI">
+                    <ToggleSwitch checked={hideCompactedHistory} onChange={(hide) => { setHideCompactedHistory(hide); setHideCompactedHistoryState(hide); }} />
+                  </NativeSetting>
+                  <NativeSetting searchId="provider-usage" label={t("settingsConfig.providerUsage")} scope="UI">
                     <ToggleSwitch checked={providerUsageVisible} onChange={onProviderUsageVisibleChange} />
                   </NativeSetting>
                 </div>
                 )}
                 {generalTab === "behavior" && (
                 <div role="tabpanel" id="general-panel-behavior" aria-labelledby="general-tab-behavior" style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-                  <NativeSetting searchId="scope-native-select-all" label={t("settingsConfig.scopeNativeSelectAll")} description={t("settingsConfig.scopeNativeSelectAllDesc")} scope="UI">
+                  <NativeSetting searchId="scope-native-select-all" label={t("settingsConfig.scopeNativeSelectAll")} description={t("settingsHint.scopeNativeSelectAll")} scope="UI">
                     <ToggleSwitch checked={scopeNativeSelectAll} onChange={onScopeNativeSelectAllChange} />
                   </NativeSetting>
-                  <NativeSetting searchId="open-url-automatically" label={t("settingsConfig.openUrlAutomatically")} description={t("settingsConfig.openUrlAutomaticallyDesc")} scope="UI">
+                  <NativeSetting searchId="open-url-automatically" label={t("settingsConfig.openUrlAutomatically")} scope="UI">
                     <ToggleSwitch checked={openUrlAutomatically} onChange={onOpenUrlAutomaticallyChange} />
                   </NativeSetting>
-                  <NativeSetting searchId="open-file-automatically" label={t("settingsConfig.openFileAutomatically")} description={t("settingsConfig.openFileAutomaticallyDesc")} scope="UI">
+                  <NativeSetting searchId="open-file-automatically" label={t("settingsConfig.openFileAutomatically")} scope="UI">
                     <ToggleSwitch checked={openFileAutomatically} onChange={onOpenFileAutomaticallyChange} />
                   </NativeSetting>
-                  <NativeSetting searchId="completion-sound" label={t("settingsConfig.completionSound")} description={t("settingsConfig.completionSoundDesc")} scope="UI">
+                  <NativeSetting searchId="completion-sound" label={t("settingsConfig.completionSound")} scope="UI">
                     <ToggleSwitch
                       checked={soundEnabled}
                       onChange={(next) => {
@@ -1055,8 +1121,8 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                   </NativeSetting>
                   <NativeSetting
                     searchId="tts-autoplay"
-                    label={t("settingsConfig.ttsAutoplay") || "Auto-read assistant responses"}
-                    description={ttsSupported ? (t("settingsConfig.ttsAutoplayDesc") || "Automatically read aloud new assistant replies when completed.") : `${t("settingsConfig.ttsAutoplayDesc") || "Automatically read aloud new assistant replies when completed."} (${t("settingsConfig.ttsNotSupported") || "Not supported in this browser"})`}
+                    label={t("settingsConfig.ttsAutoplay")}
+                    description={ttsSupported ? undefined : t("settingsConfig.ttsNotSupported")}
                     scope="UI"
                   >
                     <ToggleSwitch
@@ -1067,8 +1133,8 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                   </NativeSetting>
                   <NativeSetting
                     searchId="tts-voice"
-                    label={t("settingsConfig.ttsVoice") || "Speech Voice"}
-                    description={ttsSupported ? (t("settingsConfig.ttsVoiceDesc") || "Select the browser voice for text-to-speech reading.") : `${t("settingsConfig.ttsVoiceDesc") || "Select the browser voice for text-to-speech reading."} (${t("settingsConfig.ttsNotSupported") || "Not supported in this browser"})`}
+                    label={t("settingsConfig.ttsVoice")}
+                    description={ttsSupported ? undefined : t("settingsConfig.ttsNotSupported")}
                     scope="UI"
                   >
                     <Select
@@ -1084,7 +1150,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                       ]}
                     />
                   </NativeSetting>
-                  <NativeSetting searchId="message-during-active-run" label={t("settingsConfig.messageDuringActiveRun")} description={t("settingsConfig.messageDuringActiveRunDesc")} scope="UI">
+                  <NativeSetting searchId="message-during-active-run" label={t("settingsConfig.messageDuringActiveRun")} description={t("settingsHint.messageDuringActiveRun")} scope="UI">
                     <Select
                       style={selectStyle}
                       value={submitBehavior}
@@ -1099,7 +1165,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                       ]}
                     />
                   </NativeSetting>
-                  <NativeSetting searchId="word-completion" label={t("settingsConfig.wordCompletion")} description={t("settingsConfig.wordCompletionDesc")} scope="UI">
+                  <NativeSetting searchId="word-completion" label={t("settingsConfig.wordCompletion")} description={t("settingsHint.wordCompletion")} scope="UI">
                     <Select
                       style={selectStyle}
                       value={wordCompletion}
@@ -1113,6 +1179,35 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         { value: "on", label: t("settingsConfig.wordCompletionOn") },
                         { value: "off", label: t("settingsConfig.wordCompletionOff") },
                       ]}
+                    />
+                  </NativeSetting>
+                  <NativeSetting searchId="terminal-command" label={t("settingsConfig.terminalCommand")} description={t("settingsHint.terminalCommand")} scope="UI">
+                    <Select
+                      style={selectStyle}
+                      value={terminalCommandMode}
+                      onChange={(nextValue) => {
+                        const next = nextValue as TerminalCommandMode;
+                        setTerminalCommandMode(next);
+                        setTerminalCommandModeState(next);
+                      }}
+                      options={[
+                        { value: "auto", label: t("settingsConfig.terminalCommandAuto") },
+                        { value: "local", label: t("settingsConfig.terminalCommandLocal") },
+                        { value: "ssh", label: t("settingsConfig.terminalCommandSsh") },
+                      ]}
+                    />
+                  </NativeSetting>
+                  <NativeSetting searchId="terminal-command-ssh-host" label={t("settingsConfig.terminalCommandSshHost")} description={t("settingsHint.terminalCommandSshHost")} scope="UI">
+                    <input
+                      type="text"
+                      value={terminalSshHost}
+                      placeholder={typeof window === "undefined" ? "" : window.location.hostname}
+                      spellCheck={false}
+                      autoCapitalize="off"
+                      aria-label={t("settingsConfig.terminalCommandSshHost")}
+                      onChange={(event) => setTerminalSshHostState(event.target.value)}
+                      onBlur={() => setTerminalSshHost(terminalSshHost)}
+                      style={{ width: 180, maxWidth: "100%", padding: "6px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", color: "var(--text)", fontFamily: "var(--font-mono)", fontSize: "var(--text-sm)" }}
                     />
                   </NativeSetting>
                 </div>
@@ -1130,7 +1225,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
               <div role="tabpanel" id="settings-panel-providers" aria-labelledby="settings-tab-providers" className="settings-panel-inner" style={{ width: "100%", maxWidth: 1080, minHeight: 0, flexDirection: "column", padding: isMobile ? "16px 14px 32px" : "32px 24px 64px" }}>
                 <div style={{ marginBottom: 12 }}>
                   <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("settingsTabs.providers.label")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 16px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.45 }}>{t("settingsTabs.providers.description")}</p>
                 </div>
                 <ModelsConfig
                   embedded onClose={onClose} onSaved={onModelsSaved}
@@ -1139,7 +1233,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                   defaultsPanel={
                     <section aria-labelledby="model-defaults-heading" style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                       <h3 id="model-defaults-heading" className="display-serif" style={{ fontSize: 19, margin: 0 }}>{t("settingsConfig.modelDefaults")}</h3>
-                      <p className="settings-content-subtitle" style={{ margin: "0 0 6px" }}>{t("settingsConfig.modelDefaultsDesc")}</p>
                       {nativeSettingsLoading ? <SettingsTabLoading /> : nativeSettingsError ? (
                         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                           <Alert variant="error" description={nativeSettingsError} />
@@ -1147,7 +1240,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         </div>
                       ) : (
                         <>
-                          <NativeSetting searchId="reasoning" label={t("settingsConfig.reasoning")} description={t("settingsConfig.reasoningDesc")} scope="Native OMP">
+                          <NativeSetting searchId="reasoning" label={t("settingsConfig.reasoning")} scope="Native OMP">
                             <Select
                               style={selectStyle}
                               value={nativeSettings?.defaultThinkingLevel ?? "high"}
@@ -1155,7 +1248,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                               options={["auto", "minimal", "low", "medium", "high", "xhigh", "max"].map((level) => ({ value: level, label: level }))}
                             />
                           </NativeSetting>
-                          <NativeSetting searchId="verbosity" label={t("settingsConfig.verbosity")} description={t("settingsConfig.verbosityDesc")} scope="Native OMP">
+                          <NativeSetting searchId="verbosity" label={t("settingsConfig.verbosity")} scope="Native OMP">
                             <Select
                               style={selectStyle}
                               value={nativeSettings?.textVerbosity ?? "medium"}
@@ -1167,7 +1260,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                               ]}
                             />
                           </NativeSetting>
-                          <NativeSetting searchId="personality" label={t("settingsConfig.personality")} description={t("settingsConfig.personalityDesc")} scope="Native OMP">
+                          <NativeSetting searchId="personality" label={t("settingsConfig.personality")} scope="Native OMP">
                             <Select
                               style={selectStyle}
                               value={nativeSettings?.personality ?? "default"}
@@ -1180,10 +1273,10 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                               ]}
                             />
                           </NativeSetting>
-                          <NativeSetting searchId="thinking-blocks" label={t("settingsConfig.thinkingBlocks")} description={t("settingsConfig.thinkingBlocksDesc")} scope="Native OMP">
+                          <NativeSetting searchId="thinking-blocks" label={t("settingsConfig.thinkingBlocks")} scope="Native OMP">
                             <ToggleSwitch checked={nativeSettings?.hideThinkingBlock ?? false} onChange={(checked) => patchSettings({ hideThinkingBlock: checked })} />
                           </NativeSetting>
-                          <NativeSetting searchId="external-thinking" label={t("settingsConfig.externalThinking")} description={t("settingsConfig.externalThinkingDesc")} scope="Native OMP">
+                          <NativeSetting searchId="external-thinking" label={t("settingsConfig.externalThinking")} description={t("settingsHint.externalThinking")} scope="Native OMP">
                             <ToggleSwitch checked={nativeSettings?.externalThinking ?? false} onChange={(checked) => patchSettings({ externalThinking: checked })} />
                           </NativeSetting>
                         </>
@@ -1220,9 +1313,8 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
               <div role="tabpanel" id="settings-panel-extensions" aria-labelledby="settings-tab-extensions" className="settings-panel-inner" style={{ display: "flex", width: "100%", maxWidth: 940, minHeight: 0, flexDirection: "column", padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16 }}>
                 <div style={{ marginBottom: 4 }}>
                   <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("settingsConfig.extensionsSkills")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 16px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.45 }}>{t("settingsConfig.extensionsSkillsDesc")}</p>
                 </div>
-                <NativeSetting searchId="generate-image" label={t("settingsConfig.generateImage")} description={t("settingsConfig.generateImageDesc")} scope="Native OMP">
+                <NativeSetting searchId="generate-image" label={t("settingsConfig.generateImage")} description={t("settingsHint.generateImage")} scope="Native OMP">
                   <ToggleSwitch
                     checked={nativeSettings?.generate_image?.enabled ?? true}
                     onChange={(checked) => patchSection("generate_image", { enabled: checked })}
@@ -1230,22 +1322,21 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                 </NativeSetting>
                 <section id="settings-mcp-servers" aria-labelledby="settings-mcp-heading" style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%", borderTop: "1px solid var(--border)", paddingTop: 18 }}>
                   <h3 id="settings-mcp-heading" style={{ margin: 0, fontSize: 16, color: "var(--text)" }}>{t("settingsConfig.mcpServers")}</h3>
-                  <p className="settings-content-subtitle" style={{ margin: 0, fontSize: 13, color: "var(--text-muted)" }}>{t("settingsConfig.mcpServersDesc")}</p>
                   {cwd && (
                     <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-                      <NativeSetting searchId="load-project-mcp-servers" label={t("settingsConfig.loadProjectMcp")} description={t("settingsConfig.loadProjectMcpDesc")} scope="Native OMP">
+                      <NativeSetting searchId="load-project-mcp-servers" label={t("settingsConfig.loadProjectMcp")} scope="Native OMP">
                         <ToggleSwitch
                           checked={nativeSettings?.mcp?.enableProjectConfig ?? true}
                           onChange={(checked) => patchSection("mcp", { enableProjectConfig: checked })}
                         />
                       </NativeSetting>
-                      <NativeSetting searchId="render-mcp-markdown" label={t("settingsConfig.renderMcpMarkdown")} description={t("settingsConfig.renderMcpMarkdownDesc")} scope="Native OMP">
+                      <NativeSetting searchId="render-mcp-markdown" label={t("settingsConfig.renderMcpMarkdown")} scope="Native OMP">
                         <ToggleSwitch
                           checked={nativeSettings?.mcp?.renderMarkdownResults ?? true}
                           onChange={(checked) => patchSection("mcp", { renderMarkdownResults: checked })}
                         />
                       </NativeSetting>
-                      <NativeSetting searchId="mcp-resource-updates" label={t("settingsConfig.mcpResourceUpdates")} description={t("settingsConfig.mcpResourceUpdatesDesc")} scope="Native OMP">
+                      <NativeSetting searchId="mcp-resource-updates" label={t("settingsConfig.mcpResourceUpdates")} scope="Native OMP">
                         <ToggleSwitch
                           checked={nativeSettings?.mcp?.notifications ?? false}
                           onChange={(checked) => patchSection("mcp", { notifications: checked })}
@@ -1258,7 +1349,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                 </section>
                 <section id="settings-skills-library" aria-labelledby="settings-skills-heading" style={{ display: "flex", flexDirection: "column", gap: 12, width: "100%", minWidth: 0, borderTop: "1px solid var(--border)", paddingTop: 18 }}>
                   <h3 id="settings-skills-heading" style={{ margin: 0, fontSize: 16, color: "var(--text)" }}>{t("settingsConfig.skillsLibrary")}</h3>
-                  <p className="settings-content-subtitle" style={{ margin: 0, fontSize: 13, color: "var(--text-muted)" }}>{t("settingsConfig.skillsLibraryDesc")}</p>
                   {cwd ? (
                     <div style={{ display: "flex", flexDirection: "column", minHeight: isMobile ? undefined : 600, minWidth: 0 }}>
                       <SkillsConfig key={cwd} embedded cwd={cwd} onClose={onClose} />
@@ -1274,7 +1364,6 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
               <div role="tabpanel" id="settings-panel-agents" aria-labelledby="settings-tab-agents" className="settings-panel-inner" style={{ width: "100%", maxWidth: 1080, padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", gap: 16 }}>
                 <div>
                   <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)" }}>{t("settingsTabs.agents.label")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 0", fontSize: 13, color: "var(--text-muted)" }}>{t("settingsTabs.agents.description")}</p>
                 </div>
                 <SettingsSubTabs
                   id="agents" label={t("settingsTabs.agents.label")}
@@ -1286,7 +1375,24 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                   <AgentInstructionsConfig />
                 </div>
                 <div role="tabpanel" id="agents-panel-subagents" aria-labelledby="agents-tab-subagents" hidden={agentTab !== "subagents"} style={{ display: agentTab === "subagents" ? "block" : "none", minWidth: 0 }}>
-                  <p className="settings-content-subtitle" style={{ margin: "0 0 12px" }}>{t("settingsConfig.agentsDesc")}</p>
+                  <SubagentAccessSetting />
+                  {nativeSettingsLoading ? <SettingsTabLoading /> : nativeSettingsError ? (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 12 }}>
+                      <Alert variant="error" description={nativeSettingsError} />
+                      <button type="button" className="settings-back" onClick={() => void loadNativeSettings()}>{t("chatWindow.retry")}</button>
+                    </div>
+                  ) : (
+                    <>
+                      <NativeSetting searchId="subagents-depth" label={t("settingsConfig.subagentsDepth")} description={t("settingsHint.subagentsDepth")} scope="Native OMP">
+                        <NativeIntegerInput value={nativeSettings?.task?.maxRecursionDepth ?? 2} minimum={-1}
+                          onCommit={(maxRecursionDepth) => patchSection("task", { maxRecursionDepth })} />
+                      </NativeSetting>
+                      <NativeSetting searchId="subagents-concurrency" label={t("settingsConfig.subagentsConcurrency")} description={t("settingsHint.subagentsConcurrency")} scope="Native OMP">
+                        <NativeIntegerInput value={nativeSettings?.task?.maxConcurrency ?? 32} minimum={0}
+                          onCommit={(maxConcurrency) => patchSection("task", { maxConcurrency })} />
+                      </NativeSetting>
+                    </>
+                  )}
                   <AgentsConfig cwd={cwd} />
                 </div>
                 {(agentTab === "runtime" || agentTab === "approvals") && (
@@ -1303,21 +1409,28 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                 {/* Context Compaction Section */}
                 <section style={{ display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--border)", paddingTop: 18, width: "100%" }}>
                   <div className="settings-section-title" style={{ fontSize: 13.5, fontWeight: 600, margin: 0 }}>{t("settingsConfig.contextCompaction")}</div>
-                  <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12.5, lineHeight: 1.45 }}>{t("settingsConfig.contextCompactionDesc")}</p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4, width: "100%" }}>
-                    <NativeSetting searchId="automatic-compaction" label={t("settingsConfig.automaticCompaction")} description={t("settingsConfig.automaticCompactionDesc")} scope="Native OMP">
+                    <NativeSetting searchId="automatic-compaction" label={t("settingsConfig.automaticCompaction")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.compaction?.enabled ?? true}
                         onChange={(checked) => patchSection("compaction", { enabled: checked })}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="continue-after-compaction" label={t("settingsConfig.continueAfterCompaction")} description={t("settingsConfig.continueAfterCompactionDesc")} scope="Native OMP">
+                    <DependentSettings active={nativeSettings?.compaction?.enabled ?? true}>
+                    <NativeSetting searchId="continue-after-compaction" label={t("settingsConfig.continueAfterCompaction")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.compaction?.autoContinue ?? true}
                         onChange={(checked) => patchSection("compaction", { autoContinue: checked })}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="maintenance-strategy" label={t("settingsConfig.maintenanceStrategy")} description={t("settingsConfig.maintenanceStrategyDesc")} scope="Native OMP">
+                    <NativeSetting searchId="compact-mid-turn" label={t("settingsConfig.compactMidTurn")} scope="Native OMP">
+                      <ToggleSwitch
+                        checked={nativeSettings?.compaction?.midTurnEnabled ?? true}
+                        onChange={(checked) => patchSection("compaction", { midTurnEnabled: checked })}
+                      />
+                    </NativeSetting>
+                    </DependentSettings>
+                    <NativeSetting searchId="maintenance-strategy" label={t("settingsConfig.maintenanceStrategy")} scope="Native OMP">
                       <Select
                         style={selectStyle}
                         value={nativeSettings?.compaction?.strategy ?? "snapcompact"}
@@ -1331,21 +1444,14 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         ]}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="compact-mid-turn" label={t("settingsConfig.compactMidTurn")} description={t("settingsConfig.compactMidTurnDesc")} scope="Native OMP">
-                      <ToggleSwitch
-                        checked={nativeSettings?.compaction?.midTurnEnabled ?? true}
-                        onChange={(checked) => patchSection("compaction", { midTurnEnabled: checked })}
-                      />
-                    </NativeSetting>
                   </div>
                 </section>
 
                 {/* Memory & Auto-Learn Section */}
                 <section style={{ display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--border)", paddingTop: 18, width: "100%" }}>
                   <div className="settings-section-title" style={{ fontSize: 13.5, fontWeight: 600, margin: 0 }}>{t("settingsConfig.memoryAutoLearn")}</div>
-                  <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12.5, lineHeight: 1.45 }}>{t("settingsConfig.memoryAutoLearnDesc")}</p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4, width: "100%" }}>
-                    <NativeSetting searchId="memory-backend" label={t("settingsConfig.memoryBackend")} description={t("settingsConfig.memoryBackendDesc")} scope="Native OMP">
+                    <NativeSetting searchId="memory-backend" label={t("settingsConfig.memoryBackend")} scope="Native OMP">
                       <Select
                         style={selectStyle}
                         value={nativeSettings?.memory?.backend ?? "mnemopi"}
@@ -1358,19 +1464,22 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         ]}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="enable-auto-learn" label={t("settingsConfig.enableAutoLearn")} description={t("settingsConfig.enableAutoLearnDesc")} scope="Native OMP">
+                    <NativeSetting searchId="enable-auto-learn" label={t("settingsConfig.enableAutoLearn")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.autolearn?.enabled ?? true}
                         onChange={(checked) => patchSection("autolearn", { enabled: checked })}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="private-capture-turn" label={t("settingsConfig.privateCaptureTurn")} description={t("settingsConfig.privateCaptureTurnDesc")} scope="Native OMP">
+                    <DependentSettings active={nativeSettings?.autolearn?.enabled ?? true}>
+                    <NativeSetting searchId="private-capture-turn" label={t("settingsConfig.privateCaptureTurn")} description={t("settingsHint.privateCaptureTurn")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.autolearn?.autoContinue ?? true}
                         onChange={(checked) => patchSection("autolearn", { autoContinue: checked })}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="memory-scope" label={t("settingsConfig.memoryScope")} description={t("settingsConfig.memoryScopeDesc")} scope="Native OMP">
+                    </DependentSettings>
+                    <DependentSettings active={(nativeSettings?.memory?.backend ?? "mnemopi") === "mnemopi"} label={t("settingsConfig.memoryBackendMnemopi")}>
+                    <NativeSetting searchId="memory-scope" label={t("settingsConfig.memoryScope")} scope="Native OMP">
                       <Select
                         style={selectStyle}
                         value={nativeSettings?.mnemopi?.scoping ?? "per-project"}
@@ -1382,33 +1491,34 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         ]}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="recall-on-session-start" label={t("settingsConfig.recallOnSessionStart")} description={t("settingsConfig.recallOnSessionStartDesc")} scope="Native OMP">
+                    <NativeSetting searchId="recall-on-session-start" label={t("settingsConfig.recallOnSessionStart")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.mnemopi?.autoRecall ?? true}
                         onChange={(checked) => patchSection("mnemopi", { autoRecall: checked })}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="retain-completed-turns" label={t("settingsConfig.retainCompletedTurns")} description={t("settingsConfig.retainCompletedTurnsDesc")} scope="Native OMP">
+                    <NativeSetting searchId="retain-completed-turns" label={t("settingsConfig.retainCompletedTurns")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.mnemopi?.autoRetain ?? true}
                         onChange={(checked) => patchSection("mnemopi", { autoRetain: checked })}
                       />
                     </NativeSetting>
+                    </DependentSettings>
                   </div>
                 </section>
 
                 {/* Retry Section */}
                 <section style={{ display: "flex", flexDirection: "column", gap: 10, borderTop: "1px solid var(--border)", paddingTop: 18, width: "100%" }}>
                   <div className="settings-section-title" style={{ fontSize: 13.5, fontWeight: 600, margin: 0 }}>{t("settingsConfig.automaticRetry")}</div>
-                  <p style={{ margin: 0, color: "var(--text-muted)", fontSize: 12.5, lineHeight: 1.45 }}>{t("settingsConfig.automaticRetryDesc")}</p>
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, marginTop: 4, width: "100%" }}>
-                    <NativeSetting searchId="automatic-retry" label={t("settingsConfig.retryToggle")} description={t("settingsConfig.retryToggleDesc")} scope="Native OMP">
+                    <NativeSetting searchId="automatic-retry" label={t("settingsConfig.retryToggle")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.retry?.enabled ?? true}
                         onChange={(checked) => patchSection("retry", { enabled: checked })}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="max-attempts" label={t("settingsConfig.maxAttempts")} description={t("settingsConfig.maxAttemptsDesc")} scope="Native OMP">
+                    <DependentSettings active={nativeSettings?.retry?.enabled ?? true}>
+                    <NativeSetting searchId="max-attempts" label={t("settingsConfig.maxAttempts")} scope="Native OMP">
                       <Select
                         style={selectStyle}
                         value={String(nativeSettings?.retry?.maxRetries ?? 2)}
@@ -1420,12 +1530,13 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         ]}
                       />
                     </NativeSetting>
-                    <NativeSetting searchId="model-fallback" label={t("settingsConfig.modelFallback")} description={t("settingsConfig.modelFallbackDesc")} scope="Native OMP">
+                    <NativeSetting searchId="model-fallback" label={t("settingsConfig.modelFallback")} scope="Native OMP">
                       <ToggleSwitch
                         checked={nativeSettings?.retry?.modelFallback ?? false}
                         onChange={(checked) => patchSection("retry", { modelFallback: checked })}
                       />
                     </NativeSetting>
+                    </DependentSettings>
                   </div>
                 </section>
               </div>
@@ -1433,9 +1544,8 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                         {agentTab === "approvals" && (
               <section style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 <h3 className="display-serif" style={{ fontSize: 19, margin: 0 }}>{t("settingsConfig.toolSafetyApprovals")}</h3>
-                <p className="settings-content-subtitle" style={{ margin: "0 0 6px" }}>{t("settingsConfig.toolSafetyApprovalsDesc")}</p>
                 <div style={{ display: "flex", flexDirection: "column", gap: 10, width: "100%" }}>
-                  <NativeSetting searchId="approval-mode" label={t("settingsConfig.approvalMode")} description={t("settingsConfig.approvalModeDesc")} scope="Native OMP">
+                  <NativeSetting searchId="approval-mode" label={t("settingsConfig.approvalMode")} scope="Native OMP">
                     <Select
                       style={selectStyle}
                       value={nativeSettings?.tools?.approvalMode ?? "yolo"}
@@ -1447,7 +1557,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                       ]}
                     />
                   </NativeSetting>
-                  <NativeSetting searchId="bash-override" label={t("settingsConfig.bashOverride")} description={t("settingsConfig.bashOverrideDesc")} scope="Native OMP">
+                  <NativeSetting searchId="bash-override" label={t("settingsConfig.bashOverride")} scope="Native OMP">
                     <Select
                       style={selectStyle}
                       value={nativeSettings?.tools?.approval?.bash ?? "prompt"}
@@ -1459,7 +1569,7 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                       ]}
                     />
                   </NativeSetting>
-                  <NativeSetting searchId="extension-tool-requests" label={t("settingsConfig.extensionToolRequests")} description={t("settingsConfig.extensionToolRequestsDesc")} scope="Native OMP">
+                  <NativeSetting searchId="extension-tool-requests" label={t("settingsConfig.extensionToolRequests")} scope="Native OMP">
                     <Select
                       style={selectStyle}
                       value={nativeSettings?.tools?.approval?.extension ?? "prompt"}
@@ -1485,10 +1595,10 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
               <div role="tabpanel" id="settings-panel-system" aria-labelledby="settings-tab-system" className="settings-panel-inner" style={{ padding: isMobile ? "16px 14px 32px" : "32px 24px 64px", display: "flex", flexDirection: "column", gap: 18 }}>
                 <div style={{ marginBottom: 4 }}>
                   <h2 className="display-serif" style={{ fontSize: 22, fontWeight: 600, margin: 0, color: "var(--text)", letterSpacing: "-0.01em" }}>{t("settingsConfig.systemUpdates")}</h2>
-                  <p className="settings-content-subtitle" style={{ margin: "4px 0 16px", fontSize: 13, color: "var(--text-muted)", lineHeight: 1.45 }}>{t("settingsConfig.systemUpdatesDescription")}</p>
                 </div>
 
                 <AutoResumeSessionsSetting />
+                <SudoAutoAnswerSetting />
 
                 {/* ompweb app update card */}
                 <section style={{ padding: 14, border: appUpdateIsAvailable ? "1px solid color-mix(in srgb, var(--accent) 45%, var(--border))" : "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
@@ -1550,56 +1660,22 @@ export function SettingsConfig({ activeTab, appearanceTab, onAppearanceTabChange
                   {appUpdateMessage && <Alert variant={appUpdateMessage.toLowerCase().includes("fail") || appUpdateMessage.toLowerCase().includes("error") ? "error" : "info"} description={appUpdateMessage} onDismiss={() => setAppUpdateMessage(null)} />}
                 </section>
 
-                {/* OMP runtime update card */}
-                <section style={{ padding: 14, border: ompUpdateIsAvailable ? "1px solid color-mix(in srgb, var(--accent) 45%, var(--border))" : "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* Source-managed OMP runtime */}
+                <section style={{ padding: 14, border: "1px solid var(--border)", borderRadius: "var(--radius-card)", background: "var(--bg-panel)", display: "flex", flexDirection: "column", gap: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                     <div>
                       <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                         <span style={{ fontSize: 13, fontWeight: 600 }}>{t("settingsConfig.ompLabel")}</span>
-                        {ompUpdateIsAvailable && (
-                          <span
-                            role="status"
-                            aria-label={t("settingsTabs.updateAvailable")}
-                            title={t("settingsTabs.updateAvailable")}
-                            style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", flexShrink: 0 }}
-                          />
-                        )}
                       </div>
-                      <div style={{ marginTop: 4, color: ompUpdateIsAvailable ? "var(--accent)" : "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
-                        {checking || (!hasCheckedUpdates && !update) ? t("settingsConfig.checkingUpdates") : update?.updateAvailable ? t("appShell.updateVersion", { current: update.currentVersion ?? "?", available: update.availableVersion ?? "?" }) : update?.currentVersion ? t("settingsConfig.upToDate", { version: update.currentVersion }) : t("settingsConfig.versionUnavailable")}
+                      <div style={{ marginTop: 4, color: "var(--text-muted)", fontFamily: "var(--font-mono)", fontSize: 12 }}>
+                        {checking || (!hasCheckedUpdates && !update) ? t("settingsConfig.readingRuntimeVersion") : update?.currentVersion ?? t("settingsConfig.versionUnavailable")}
                       </div>
                     </div>
-                    <button type="button" onClick={() => void checkForUpdate(true)} disabled={checking} aria-label={t("settingsConfig.checkOmpUpdates")} style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "transparent", color: "var(--text)", cursor: checking ? "not-allowed" : "pointer", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <button type="button" onClick={() => void refreshRuntimeVersion()} disabled={checking} aria-label={t("settingsConfig.refreshRuntimeVersion")} style={{ padding: "6px 10px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "transparent", color: "var(--text)", cursor: checking ? "not-allowed" : "pointer", fontSize: 12, display: "inline-flex", alignItems: "center", gap: 5 }}>
                       <RefreshCw size={13} aria-hidden="true" /> {t("settingsConfig.refresh")}
                     </button>
                   </div>
-                  {update?.updateAvailable && (
-                    <div style={{ marginTop: 6, padding: "10px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", display: "flex", flexDirection: "column", gap: 6 }}>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("settingsConfig.runOmpUpdateCommand")}</div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
-                        <code style={{ flex: 1, fontFamily: "var(--font-mono)", fontSize: 12, color: "var(--accent)", wordBreak: "break-all" }}>{update.updateCommand || "omp update"}</code>
-                        <button
-                          type="button"
-                          onClick={() => void handleOmpUpdateNow()}
-                          disabled={ompUpdating}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 8px", border: "1px solid var(--accent-strong)", borderRadius: "var(--radius-control)", background: "var(--accent-strong)", color: "var(--on-accent)", cursor: ompUpdating ? "wait" : "pointer", fontSize: 11, fontWeight: 600 }}
-                        >
-                          <Download size={12} aria-hidden="true" /> {ompUpdating ? t("settingsConfig.updating") : t("settingsConfig.ompUpdateAction")}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            void copyText(update.updateCommand || "omp update")
-                              .then(() => toast.success(t("appShell.commandCopied")))
-                              .catch(() => toast.error(t("appShell.commandCopyFailed")));
-                          }}
-                          style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", color: "var(--text)", cursor: "pointer", fontSize: 11 }}
-                        >
-                          <Copy size={12} aria-hidden="true" /> {t("appShell.copyCommand")}
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  <div style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("settingsConfig.ompSourceManaged")}</div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 6 }}>
                     <button
                       type="button"

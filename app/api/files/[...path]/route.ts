@@ -14,10 +14,14 @@ import {
 import {
   DOCX_PREVIEW_MAX_BYTES,
   IMAGE_PREVIEW_MAX_BYTES,
+  TEXT_PREVIEW_FORCE_MAX_BYTES,
   TEXT_PREVIEW_MAX_BYTES,
   documentPreviewKind,
+  BINARY_SNIFF_BYTES,
   getAudioMime,
   getDocumentMime,
+  getVideoMime,
+  looksBinary,
   getFileExt,
   getImageMime,
   getStreamSecurityHeaders,
@@ -50,17 +54,26 @@ const MAX_UPLOAD_REQUEST_BYTES = MAX_UPLOAD_TOTAL_BYTES + 1024 * 1024;
 const MAX_UPLOAD_CHECK_REQUEST_BYTES = 1024 * 1024;
 
 const EXT_TO_LANGUAGE: Record<string, string> = {
-  ts: "typescript", tsx: "typescript", js: "javascript", jsx: "javascript",
-  mjs: "javascript", cjs: "javascript", py: "python", rb: "ruby",
-  go: "go", rs: "rust", java: "java", kt: "kotlin", swift: "swift",
-  c: "c", cpp: "cpp", h: "c", hpp: "cpp", cs: "csharp",
-  html: "html", htm: "html", css: "css", scss: "css", less: "css",
-  json: "json", jsonl: "json", yaml: "yaml", yml: "yaml",
-  toml: "toml", xml: "xml", md: "markdown", mdx: "markdown",
-  sh: "bash", bash: "bash", zsh: "bash", fish: "bash",
-  sql: "sql", graphql: "graphql", gql: "graphql",
-  dockerfile: "dockerfile", tf: "hcl", hcl: "hcl",
-  env: "bash", gitignore: "bash", txt: "text",
+  ts: "typescript", mts: "typescript", cts: "typescript", tsx: "tsx",
+  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx",
+  py: "python", pyi: "python", rb: "ruby", go: "go", rs: "rust", java: "java", kt: "kotlin", kts: "kotlin", swift: "swift",
+  c: "c", h: "c", cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp", cs: "csharp",
+  html: "html", htm: "html", css: "css", scss: "scss", sass: "scss", less: "css",
+  json: "json", jsonl: "json", json5: "json", jsonc: "json", yaml: "yaml", yml: "yaml", toml: "toml", xml: "xml",
+  ini: "ini", cfg: "ini", conf: "ini", properties: "properties",
+  md: "markdown", mdx: "markdown",
+  sh: "bash", bash: "bash", zsh: "bash", fish: "bash", env: "bash", gitignore: "bash",
+  ps1: "powershell", psm1: "powershell", bat: "batch", cmd: "batch",
+  sql: "sql", graphql: "graphql", gql: "graphql", proto: "protobuf",
+  dockerfile: "dockerfile", tf: "hcl", hcl: "hcl", cmake: "cmake", gradle: "groovy", groovy: "groovy", nix: "nix", vim: "vim",
+  diff: "diff", patch: "diff",
+  jl: "julia", lua: "lua", php: "php", r: "r", pl: "perl", pm: "perl", scala: "scala", sc: "scala", dart: "dart",
+  hs: "haskell", ex: "elixir", exs: "elixir", erl: "erlang", hrl: "erlang", zig: "zig",
+  ml: "ocaml", mli: "ocaml", clj: "clojure", cljs: "clojure", edn: "clojure", fs: "fsharp", fsx: "fsharp",
+  v: "verilog", sv: "verilog", vhd: "vhdl", vhdl: "vhdl", sol: "solidity",
+  tex: "latex", sty: "latex", cls: "latex",
+  csv: "csv", tsv: "tsv", ipynb: "ipynb",
+  txt: "text", log: "text",
   pdf: "pdf", docx: "word",
 };
 
@@ -70,6 +83,7 @@ function getLanguage(filePath: string): string {
   if (base === "dockerfile" || base.startsWith("dockerfile.")) return "dockerfile";
   if (base === ".env" || base.startsWith(".env.")) return "bash";
   if (base === "makefile" || base === "gnumakefile") return "makefile";
+  if (base === "cmakelists.txt") return "cmake";
   const ext = base.split(".").pop() ?? "";
   return EXT_TO_LANGUAGE[ext] ?? "text";
 }
@@ -517,16 +531,38 @@ export async function GET(
       if (audioMime) {
         return streamFile(filePath, stat, audioMime, request.headers.get("range"));
       }
+      const videoMime = getVideoMime(filePath);
+      if (videoMime) {
+        return streamFile(filePath, stat, videoMime, request.headers.get("range"));
+      }
       const documentMime = getDocumentMime(filePath);
       if (documentMime) {
         return streamFile(filePath, stat, documentMime, request.headers.get("range"));
       }
-      if (stat.size > TEXT_PREVIEW_MAX_BYTES) {
-        return NextResponse.json({ error: "File too large for preview (>256KB)", code: "file_too_large_preview" }, { status: 413 });
+      // Binary content would only show as mojibake; the viewer offers a download instead.
+      if (stat.size > 0) {
+        const sample = Buffer.alloc(Math.min(BINARY_SNIFF_BYTES, stat.size));
+        const fd = fs.openSync(filePath, "r");
+        try { fs.readSync(fd, sample, 0, sample.length, 0); } finally { fs.closeSync(fd); }
+        if (looksBinary(sample, stat.size > sample.length)) {
+          return NextResponse.json({ error: "Binary file", code: "binary_file", size: stat.size }, { status: 415 });
+        }
+      }
+      // Large text loads only when asked (`force=1`), and stays read-only.
+      const force = request.nextUrl.searchParams.get("force") === "1";
+      if (stat.size > TEXT_PREVIEW_MAX_BYTES && (!force || stat.size > TEXT_PREVIEW_FORCE_MAX_BYTES)) {
+        return NextResponse.json({
+          error: "File too large to load automatically",
+          code: "file_too_large_preview",
+          size: stat.size,
+          limit: TEXT_PREVIEW_MAX_BYTES,
+          forceLimit: TEXT_PREVIEW_FORCE_MAX_BYTES,
+          forceable: stat.size <= TEXT_PREVIEW_FORCE_MAX_BYTES,
+        }, { status: 413 });
       }
       const bytes = fs.readFileSync(filePath);
       const content = bytes.toString("utf-8");
-      const editable = allowedByRoot && stat.nlink === 1 && !fs.lstatSync(filePath).isSymbolicLink() && !bytes.includes(0) && isUtf8(bytes);
+      const editable = allowedByRoot && bytes.length <= TEXT_PREVIEW_MAX_BYTES && stat.nlink === 1 && !fs.lstatSync(filePath).isSymbolicLink() && !bytes.includes(0) && isUtf8(bytes);
       const language = getLanguage(filePath);
       return NextResponse.json({ content, language, size: bytes.length, editable });
     }
@@ -535,7 +571,7 @@ export async function GET(
       if (!stat.isFile()) {
         return NextResponse.json({ error: "Not a file", code: "not_a_file" }, { status: 400 });
       }
-      const mime = getImageMime(filePath) || getAudioMime(filePath) || getDocumentMime(filePath) || "application/octet-stream";
+      const mime = getImageMime(filePath) || getAudioMime(filePath) || getVideoMime(filePath) || getDocumentMime(filePath) || "application/octet-stream";
       return streamFile(filePath, stat, mime, request.headers.get("range"), true);
     }
 
@@ -545,11 +581,12 @@ export async function GET(
       }
       const imageMime = getImageMime(filePath);
       const audioMime = getAudioMime(filePath);
+      const videoMime = getVideoMime(filePath);
       const documentMime = getDocumentMime(filePath);
       return NextResponse.json({
         size: stat.size,
         language: getLanguage(filePath),
-        mime: imageMime || audioMime || documentMime || "text/plain",
+        mime: imageMime || audioMime || videoMime || documentMime || "text/plain",
         previewKind: documentPreviewKind(filePath),
       });
     }

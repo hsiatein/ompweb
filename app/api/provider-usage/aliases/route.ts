@@ -5,8 +5,8 @@ import { loadWebServerSettings, saveWebServerSettings } from "@/lib/web-settings
 
 export const dynamic = "force-dynamic";
 
-// PUT /api/provider-usage/aliases { accountKey, alias } - name a provider
-// account in the usage panel; an empty alias removes the name.
+// PUT /api/provider-usage/aliases { accountKey, alias } - edit an account's
+// shared nickname from Connected accounts; an empty alias clears it.
 export async function PUT(req: Request) {
   let body: unknown;
   try {

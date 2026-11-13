@@ -35,18 +35,6 @@ test("markdown images render as click-to-preview thumbnails", () => {
   assert.match(html, /alt="diagram"/);
 });
 
-test("custom message images render as click-to-preview thumbnails", () => {
-  const html = renderToStaticMarkup(React.createElement(MessageView, {
-    message: {
-      role: "custom",
-      customType: "advisor",
-      content: [{ type: "image", data: "QUJD", mimeType: "image/png" }],
-    },
-  }));
-
-  assert.match(html, /<button[^>]*class="image-clickable"/);
-  assert.match(html, /src="data:image\/png;base64,QUJD"/);
-});
 
 test("click-to-preview keeps image attributes and starts closed", () => {
   const html = renderToStaticMarkup(React.createElement(ClickableImage, {

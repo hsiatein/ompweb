@@ -17,7 +17,7 @@ import { randomUUID } from "crypto";
 import { tmpdir } from "os";
 import { dirname, join, posix, resolve, win32 } from "path";
 import { checkNpmUpdate, detectInstallMethod } from "./npm-update";
-import { checkOmpUpdate, type OmpUpdateStatus } from "./omp/updates";
+import { OMP_RUNTIME_UPDATE_LOCK_REASON } from "./omp/updates";
 import { DISABLE_AUTOUPDATE_ENV_VAR, isUpdateDisabled } from "./update-policy";
 
 const LEASE_MS = 30 * 60 * 1000;
@@ -55,10 +55,10 @@ export class SelfUpdateError extends Error {
 
 type Kind = "app" | "omp";
 
-/** `OMP_WEB_DISABLE_AUTOUPDATE` blocks omp-web's own update; the OMP runtime stays updatable. */
+/** Source-managed OMP is locked independently of omp-web's update preference. */
 function assertUpdatesEnabled(kind: Kind): void {
-  if (kind === "omp" || !isUpdateDisabled()) return;
-  throw new SelfUpdateError("updates_disabled", `Updates are disabled by ${DISABLE_AUTOUPDATE_ENV_VAR}`, 403);
+  if (kind === "omp") throw new SelfUpdateError("runtime_source_managed", OMP_RUNTIME_UPDATE_LOCK_REASON, 409);
+  if (isUpdateDisabled()) throw new SelfUpdateError("updates_disabled", `Updates are disabled by ${DISABLE_AUTOUPDATE_ENV_VAR}`, 403);
 }
 
 export function resolveSelfUpdateTempRoot(
@@ -310,29 +310,12 @@ export async function prepareSelfUpdate(kind: Kind = "app"): Promise<PrepareResu
   if (isActiveLease(existingLease)) {
     throw new SelfUpdateError("update_in_progress", "Another update is already in progress", 409);
   }
-  let currentVersion: string;
-  let targetVersion: string;
-  if (kind === "omp") {
-    let ompStatus: OmpUpdateStatus;
-    try {
-      ompStatus = await checkOmpUpdate(true);
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      throw new SelfUpdateError("check_failed", `Could not check for OMP updates: ${reason.slice(-400)}`, 502);
-    }
-    if (!ompStatus.updateAvailable || !ompStatus.availableVersion) {
-      throw new SelfUpdateError("no_update_available", "No OMP update available", 409);
-    }
-    currentVersion = ompStatus.currentVersion ?? "unknown";
-    targetVersion = ompStatus.availableVersion;
-  } else {
-    const npmStatus = await checkNpmUpdate(true);
-    if (!npmStatus.updateAvailable || !npmStatus.availableVersion) {
-      throw new SelfUpdateError("no_update_available", "No update available", 409);
-    }
-    currentVersion = npmStatus.currentVersion;
-    targetVersion = npmStatus.availableVersion;
+  const npmStatus = await checkNpmUpdate(true);
+  if (!npmStatus.updateAvailable || !npmStatus.availableVersion) {
+    throw new SelfUpdateError("no_update_available", "No update available", 409);
   }
+  const currentVersion = npmStatus.currentVersion;
+  const targetVersion = npmStatus.availableVersion;
   const attemptId = randomUUID();
   const preparedAt = new Date().toISOString();
   // write lease

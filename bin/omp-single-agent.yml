@@ -1,7 +1,0 @@
-# Required policy for the customized single-agent OMPWeb build.
-task:
-  maxRecursionDepth: 0
-  speculativeLaunch: false
-tools:
-  approval:
-    task: deny

@@ -63,3 +63,24 @@ export function isWordCompletionEnabled(mode: WordCompletionMode = getWordComple
   if (mode !== "auto") return mode === "on";
   return typeof window !== "undefined" && window.matchMedia("(pointer: fine)").matches;
 }
+
+const HIDE_COMPACTED_HISTORY_KEY = "omp-web:hide-compacted-history";
+
+/** Whether a session opens with the messages before its last compaction hidden (default) or shown. */
+export function getHideCompactedHistory(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(HIDE_COMPACTED_HISTORY_KEY) !== "false";
+  } catch {
+    return true;
+  }
+}
+
+export function setHideCompactedHistory(hide: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HIDE_COMPACTED_HISTORY_KEY, String(hide));
+  } catch {
+    // storage unavailable — the preference simply won't persist
+  }
+}

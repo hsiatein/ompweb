@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Circle, Download, Info, LoaderCircle, RotateCcw } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, Download, LoaderCircle, RotateCcw } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { copyText } from "@/lib/clipboard";
 import { toast } from "@/components/ui/toast";
@@ -165,11 +165,13 @@ interface AppUpdateDialogProps {
   phase: AppUpdatePhase;
   visibleStage?: AppUpdateStage;
   error: string | null;
+  /** Sessions mid-run right now; the update stops them. */
+  runningSessions: number;
   onProceed: () => void;
   onNotNow: () => void;
 }
 
-export function AppUpdateDialog({ open, update, phase, visibleStage, error, onProceed, onNotNow }: AppUpdateDialogProps) {
+export function AppUpdateDialog({ open, update, phase, visibleStage, error, runningSessions, onProceed, onNotNow }: AppUpdateDialogProps) {
   const { t } = useI18n();
   const prefersReducedMotion = usePrefersReducedMotion();
   const [releaseNotes, setReleaseNotes] = useState<AppUpdateReleaseNotes | null>(null);
@@ -345,19 +347,10 @@ export function AppUpdateDialog({ open, update, phase, visibleStage, error, onPr
           </section>
         )}
 
-        {phase === "idle" && (
-          <div style={{ marginTop: 18, padding: "13px 14px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", display: "grid", gap: 9, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.55 }}>
-            {[
-              t("appUpdateDialog.activeSessionsWarning"),
-              t("appUpdateDialog.savedSessionsWarning"),
-              t("appUpdateDialog.disconnectWarning"),
-              t("appUpdateDialog.automaticRestart"),
-            ].map((message) => (
-              <div key={message} style={{ display: "flex", alignItems: "flex-start", gap: 9 }}>
-                <span aria-hidden="true" style={{ color: "var(--text-dim)", flexShrink: 0 }}>•</span>
-                <span>{message}</span>
-              </div>
-            ))}
+        {phase === "idle" && runningSessions > 0 && (
+          <div role="note" style={{ marginTop: 16, padding: "10px 12px", border: "1px solid var(--status-warning)", borderRadius: "var(--radius-control)", background: "var(--bg-subtle)", display: "flex", alignItems: "flex-start", gap: 8, color: "var(--text)", fontSize: 12, lineHeight: 1.5 }}>
+            <AlertTriangle size={14} aria-hidden="true" style={{ marginTop: 2, flexShrink: 0, color: "var(--status-warning)" }} />
+            <span>{t("appUpdateDialog.stopsRunning", { count: runningSessions })}</span>
           </div>
         )}
 
@@ -380,12 +373,6 @@ export function AppUpdateDialog({ open, update, phase, visibleStage, error, onPr
               </button>
             </div>
           </div>
-        )}
-
-        {phase === "restarting" && (
-          <p role="note" style={{ margin: "16px 0 0", paddingTop: 12, borderTop: "1px solid var(--border)", display: "flex", alignItems: "flex-start", gap: 8, color: "var(--text-muted)", fontSize: 12, lineHeight: 1.5 }}>
-            <Info size={14} aria-hidden="true" style={{ marginTop: 2, flexShrink: 0 }} /> <span>{t("appUpdateDialog.keepOpen")}</span>
-          </p>
         )}
 
         {phase === "completed" && (

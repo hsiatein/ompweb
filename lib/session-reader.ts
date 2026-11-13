@@ -1,5 +1,6 @@
 import { closeSync, existsSync, fstatSync, openSync, readSync, statSync, type Stats } from "fs";
 import { normalize as normalizePath } from "path";
+import { skillPromptUserText } from "./skill-prompt";
 import { getAgentDir } from "./omp/paths";
 import {
   containsBlobRef,
@@ -1251,7 +1252,10 @@ export function entryToUiMessage(
         content: `*The conversation briefly explored another branch and returned with this summary:*\n\n${entry.summary}`,
         timestamp: parseEntryTimestamp(entry.timestamp),
       };
-    case "custom_message":
+    case "custom_message": {
+      // A user's /skill invocation shows as the line they typed, like any message of theirs.
+      const skillText = skillPromptUserText(entry.customType, entry.details, (entry as { attribution?: unknown }).attribution);
+      if (skillText) return { role: "user", content: skillText, timestamp: parseEntryTimestamp(entry.timestamp) };
       return {
         role: "custom",
         customType: entry.customType,
@@ -1260,6 +1264,7 @@ export function entryToUiMessage(
         details: entry.details,
         timestamp: parseEntryTimestamp(entry.timestamp),
       };
+    }
     default:
       // model_change, thinking_level_change, service_tier_change, label,
       // title_change, session_init, ttsr_injection, mode_change, custom,

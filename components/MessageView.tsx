@@ -4,6 +4,7 @@ import { memo, useState, useId, useRef, useEffect, useLayoutEffect, useMemo, use
 import { Copy, Check, GitFork, CornerUpLeft, ChevronRight, ChevronDown, EyeOff, CircleAlert, CircleSlash, LoaderCircle, FileText, Search, FileEdit, Terminal, CheckSquare, Bot, Code2, Globe, MessagesSquare, Wrench, Volume2, Square } from "lucide-react";
 import { FileSessionContext, MarkdownBody } from "./MarkdownBody";
 import { MessageCopyActions, messagePlainText } from "./MessageCopyActions";
+import { skillPromptUserText } from "@/lib/skill-prompt";
 import { contributeContextMenu, type ContextMenuItem } from "@/lib/context-menu";
 import { copyFromContextMenu } from "./ui/context-menu";
 import { useSpeechContext } from "@/hooks/useSpeechSynthesis";
@@ -255,6 +256,11 @@ function MessageContent({ message, isStreaming, toolResults, modelNames, cwd, on
     const custom = message as CustomMessage;
     if (custom.customType === "xdev-mount-notice") {
       return null;
+    }
+    // Live copy of a user's /skill invocation (history converts it, lib/session-reader.ts).
+    const skillText = skillPromptUserText(custom.customType, custom.details);
+    if (skillText) {
+      return <UserMessageView message={{ role: "user", content: skillText, timestamp: custom.timestamp } as UserMessage} cwd={cwd} onOpenFile={onOpenFile} entryId={entryId} onFork={onFork} forking={forking} onEditFromHere={onEditFromHere} />;
     }
     if (custom.customType === "compaction") {
       return <CompactionMessageView message={custom} />;
@@ -1176,7 +1182,7 @@ const ToolCallBlock = memo(function ToolCallBlock({
                     </div>
                   )}
                   {!(hubJobs || (hubSend && !isError)) && !(resultIsEmpty && resultImages.length > 0) && (
-                    <PairedResult text={formatToolOutput(resultText ?? "", block.toolName)} isEmpty={resultIsEmpty} isError={isError} />
+                    <PairedResult text={formatToolOutput(resultText ?? "", block.toolName)} isEmpty={resultIsEmpty} isError={isError} cwd={cwd} onOpenFile={onOpenFile} />
                   )}
                 </>
               )
@@ -1319,6 +1325,9 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
   const { t, locale } = useI18n();
   const summary = getMessageText(message.content);
   const parsedSummary = useMemo(() => parseCompactionSummary(summary), [summary]);
+  // The summary is written for the model (dense lists of decisions, paths, IDs); the
+  // reader sees the event and its size, and opens the text on demand.
+  const [expanded, setExpanded] = useState(false);
   const time = formatTime(message.timestamp, locale);
   // omp ≥17.4 compaction entries carry the maintenance method and the real
   // post-compaction token count; older sessions only have tokensBefore.
@@ -1335,9 +1344,19 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
           {time && <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 10 }}>{time}</span>}
         </div>
         <div data-selection-scope="message" tabIndex={-1} style={{ padding: "11px 13px 12px" }}>
-          <div style={{ color: "var(--text)", fontSize: 15, fontWeight: 700, lineHeight: 1.35 }}>{t("messageView.conversationCompacted")}</div>
+          <button
+            type="button"
+            className="message-compaction-toggle ui-focus-ring"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            style={{ display: "flex", alignItems: "center", gap: 6, width: "100%", padding: 0, border: "none", background: "none", color: "var(--text)", cursor: "pointer", textAlign: "left", font: "inherit" }}
+          >
+            <ChevronRight size={14} strokeWidth={2} aria-hidden="true" style={{ flexShrink: 0, color: "var(--text-dim)", transform: expanded ? "rotate(90deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }} />
+            <span style={{ fontSize: 15, fontWeight: 700, lineHeight: 1.35 }}>{t("messageView.conversationCompacted")}</span>
+            <span style={{ marginLeft: "auto", color: "var(--text-dim)", fontSize: 11, fontWeight: 500 }}>{t(expanded ? "messageView.hideCompactionSummary" : "messageView.showCompactionSummary")}</span>
+          </button>
           {(method || (tokensBefore !== null && tokensAfter !== null)) && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
               {method && (
                 <span style={{ padding: "1px 7px", borderRadius: 4, background: "var(--bg-subtle)", color: "var(--text-muted)", fontSize: 11, fontFamily: "var(--font-mono)", fontWeight: 600 }}>
                   {method}
@@ -1353,9 +1372,11 @@ function CompactionMessageView({ message }: { message: CustomMessage }) {
               )}
             </div>
           )}
-          <div style={{ marginTop: 3, marginBottom: 10, color: "var(--text)", fontSize: 14, lineHeight: 1.5 }}>{t("messageView.compactionDescription")}</div>
-          {parsedSummary.body ? <MarkdownBody className="markdown-compaction-message">{parsedSummary.body}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("messageView.noSummary")}</span>}
-          <CompactionFileMetadata readFiles={parsedSummary.readFiles} modifiedFiles={parsedSummary.modifiedFiles} />
+          {expanded && <>
+            <div style={{ marginTop: 10, marginBottom: 10, color: "var(--text)", fontSize: 14, lineHeight: 1.5 }}>{t("messageView.compactionDescription")}</div>
+            {parsedSummary.body ? <MarkdownBody className="markdown-compaction-message">{parsedSummary.body}</MarkdownBody> : <span style={{ color: "var(--text-dim)", fontSize: 12 }}>{t("messageView.noSummary")}</span>}
+            <CompactionFileMetadata readFiles={parsedSummary.readFiles} modifiedFiles={parsedSummary.modifiedFiles} />
+          </>}
         </div>
       </div>
     </div>
@@ -1430,11 +1451,6 @@ function HiddenExtensionView({ message, cwd, onOpenFile }: { message: CustomMess
   const rawText = getMessageText(message.content);
   const images = getMessageImages(message.content);
   const cleanText = useMemo(() => stripHiddenWrappers(rawText), [rawText]);
-  const preview = useMemo(() => {
-    const normalized = cleanText.replace(/\s+/g, " ").trim();
-    if (!normalized) return "";
-    return normalized.length > 92 ? `${normalized.slice(0, 92)}…` : normalized;
-  }, [cleanText]);
   const hasDetails = message.details !== undefined;
   const detailsText = hasDetails ? safeJson(message.details) : "";
   const label = friendlyHiddenLabel(message.customType, t);
@@ -1472,12 +1488,6 @@ function HiddenExtensionView({ message, cwd, onOpenFile }: { message: CustomMess
             <span style={{ userSelect: "none", fontFamily: "var(--font-mono)", fontWeight: 650, letterSpacing: "0.01em", color: "var(--text-muted)", fontSize: 11 }}>
               {label}
             </span>
-            {preview ? (
-              <>
-                <span style={{ width: 3, height: 3, borderRadius: 999, background: "var(--text-dim)", opacity: 0.5, flexShrink: 0 }} />
-                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0, fontSize: 11 }}>{preview}</span>
-              </>
-            ) : null}
             <ChevronRight size={11} strokeWidth={1.8} style={{ flexShrink: 0, opacity: 0.7, transform: expanded ? "rotate(90deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }} />
           </button>
           <div style={{ flex: 1, height: 1, background: "var(--border)", opacity: 0.55 }} />
@@ -1615,7 +1625,7 @@ function HiddenExtensionView({ message, cwd, onOpenFile }: { message: CustomMess
 
 function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessage; cwd?: string; onOpenFile?: (filePath: string) => void }) {
   const { t, locale } = useI18n();
-  const [contentExpanded, setContentExpanded] = useState(message.customType !== "async-result");
+  const [contentExpanded, setContentExpanded] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(false);
   const { copied, copy: copyContent } = useCopyFeedback();
   const text = getMessageText(message.content);
@@ -1665,7 +1675,7 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
             alignItems: "center",
             gap: 8,
             padding: "7px 10px",
-            borderBottom: "1px solid var(--border)",
+            borderBottom: contentExpanded ? "1px solid var(--border)" : "none",
             background: "var(--bg-panel)",
             color: "var(--text-muted)",
             fontSize: 12,
@@ -1716,72 +1726,57 @@ function CustomMessageView({ message, cwd, onOpenFile }: { message: CustomMessag
               <MarkdownBody className="markdown-custom-message" cwd={cwd} onOpenFile={onOpenFile}>{displayText}</MarkdownBody>
             )}
           </div>
-        ) : (
-          <button
-            onClick={() => setContentExpanded(true)}
+        ) : null}
+
+        {contentExpanded && (
+          <div
             style={{
-              display: "block",
-              width: "100%",
-              padding: "8px 10px",
-              border: "none",
-              background: "transparent",
-              color: "var(--text-dim)",
-              cursor: "pointer",
-              fontSize: 12,
-              textAlign: "left",
+              userSelect: "none",
+              display: "flex",
+              alignItems: "center",
+              gap: 8,
+              padding: "4px 9px",
+              borderTop: "1px solid var(--border)",
+              background: "var(--bg-subtle)",
             }}
           >
-            {displayText ? previewText(displayText) : t("messageView.showExtensionMessage")}
-          </button>
+            {text || detailsText ? (
+              <button
+                onClick={() => copyContent(displayText || detailsText)}
+                style={{
+                  padding: "3px 7px",
+                  border: "none",
+                  background: "none",
+                  color: copied ? "var(--accent)" : "var(--text-dim)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                {copied ? t("messageView.copied") : t("messageView.copy")}
+              </button>
+            ) : null}
+            {hasDetails && (
+              <button
+                onClick={() => {
+                  setDetailsExpanded((v) => !v);
+                }}
+                style={{
+                  marginLeft: "auto",
+                  padding: "3px 7px",
+                  border: "none",
+                  background: "none",
+                  color: "var(--text-dim)",
+                  cursor: "pointer",
+                  fontSize: 11,
+                }}
+              >
+                {detailsExpanded ? t("messageView.hideDetails") : t("messageView.showDetails")}
+              </button>
+            )}
+          </div>
         )}
 
-        <div
-          style={{
-            userSelect: "none",
-            display: "flex",
-            alignItems: "center",
-            gap: 8,
-            padding: "4px 9px",
-            borderTop: "1px solid var(--border)",
-            background: "var(--bg-subtle)",
-          }}
-        >
-          {text || detailsText ? (
-            <button
-              onClick={() => copyContent(displayText || detailsText)}
-              style={{
-                padding: "3px 7px",
-                border: "none",
-                background: "none",
-                color: copied ? "var(--accent)" : "var(--text-dim)",
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              {copied ? t("messageView.copied") : t("messageView.copy")}
-            </button>
-          ) : null}
-          {hasDetails && (
-            <button
-              onClick={() => {
-                setDetailsExpanded((v) => !v);
-              }}
-              style={{
-                marginLeft: "auto",
-                padding: "3px 7px",
-                border: "none",
-                background: "none",
-                color: "var(--text-dim)",
-                cursor: "pointer",
-                fontSize: 11,
-              }}
-            >
-              {detailsExpanded ? t("messageView.hideDetails") : t("messageView.showDetails")}
-            </button>
-          )}
-        </div>
-
-        {hasDetails && detailsExpanded && (
+        {contentExpanded && hasDetails && detailsExpanded && (
           <pre
             style={{
               margin: 0,
@@ -1861,11 +1856,6 @@ function parseIrcEnvelope(content: string): { sender: string | null; body: strin
   return { sender, body: lines.slice(bodyStart).join("\n").trim() };
 }
 
-function previewText(text: string): string {
-  const normalized = text.replace(/\s+/g, " ").trim();
-  if (!normalized) return translate("messageView.showExtensionMessage");
-  return normalized.length > 140 ? `${normalized.slice(0, 140)}...` : normalized;
-}
 
 function BashExecutionView({ message, sessionId }: { message: BashExecutionMessage; sessionId?: string }) {
   const { t } = useI18n();

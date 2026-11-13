@@ -41,32 +41,3 @@ export function writeModelRoles(roles: ModelRoles): void {
   }
   renameSync(temp, path);
 }
-
-export function readDisabledProviders(): Set<string> {
-  const path = configPath();
-  if (!existsSync(path)) return new Set();
-  const doc = parseDocument(readFileSync(path, "utf8"));
-  if (doc.errors.length > 0) throw new Error(`${path} is not valid YAML: ${doc.errors[0].message}`);
-  const data = doc.toJS();
-  if (!isRecord(data) || !Array.isArray(data.disabledProviders)) return new Set();
-  return new Set(data.disabledProviders.filter((provider): provider is string => typeof provider === "string"));
-}
-
-/** Re-enable a provider after a successful native OMP login. */
-export function enableProvider(provider: string): void {
-  const path = configPath();
-  if (!existsSync(path)) return;
-  const doc = parseDocument(readFileSync(path, "utf8"));
-  if (doc.errors.length > 0) throw new Error(`${path} is not valid YAML: ${doc.errors[0].message}`);
-  if (!isMap(doc.contents)) throw new Error(`${path} must contain a YAML mapping`);
-  const data = doc.toJS();
-  const disabled = isRecord(data) && Array.isArray(data.disabledProviders)
-    ? data.disabledProviders.filter((value): value is string => typeof value === "string")
-    : [];
-  const next = disabled.filter((value) => value !== provider);
-  if (next.length === disabled.length) return;
-  doc.set("disabledProviders", next);
-  const temp = `${path}.tmp-${process.pid}-${Date.now()}`;
-  writeFileSync(temp, doc.toString(), "utf8");
-  renameSync(temp, path);
-}

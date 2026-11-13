@@ -31,7 +31,8 @@ const nextConfig = (phase: string): NextConfig => {
     // honor HTTP(S)_PROXY for server-side fetch; keep it external so the
     // bundler does not inline a second copy next to the global dispatcher.
     // node-pty is a native addon (lib/terminal-manager.ts loads it at runtime).
-    serverExternalPackages: ["undici", "dxt-js", "lz4js", "sharp", "node-pty"],
+    // Server-side form discovery loads QuickJS's adjacent WASM through Node.
+    serverExternalPackages: ["undici", "dxt-js", "lz4js", "sharp", "node-pty", "quickjs-emscripten-core", "@jitl/quickjs-wasmfile-release-sync"],
     webpack(config: Parameters<NonNullable<NextConfig["webpack"]>>[0]) {
       // Next's entrypoint tracer does not automatically reject dynamic paths
       // outside the project root. Add parent/profile patterns to its ignore list
@@ -83,14 +84,30 @@ const nextConfig = (phase: string): NextConfig => {
         { key: "Referrer-Policy", value: "no-referrer" },
         { key: "Permissions-Policy", value: "camera=(), microphone=(), geolocation=()" },
       ];
+      // Trusted plugin pages may run modules in opaque child frames using blob URLs.
+      // Keep API origin guards intact; child bridge bootstrap code travels inline.
+      const pluginPageHeaders = securityHeaders.map((header) => {
+        if (header.key === "X-Frame-Options") return { ...header, value: "SAMEORIGIN" };
+        if (header.key === "Content-Security-Policy") return {
+          ...header,
+          value: header.value
+            .replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+            .replace("script-src 'self'", "script-src 'self' blob:"),
+        };
+        return header;
+      });
       const globalRule = {
-        // Files and sandboxed wallpaper documents supply their own policies.
-        source: "/((?!api/files/|api/wallpapers/[a-f0-9]+/web-assets/).*)",
+        // Files, sandboxed wallpaper documents and plugin pages supply their own policies.
+        source: "/((?!api/files/|api/wallpapers/[a-f0-9]+/web-assets/|api/web-plugins/[a-z0-9-]+/files/).*)",
         headers: securityHeaders,
       };
       const fileRule = {
         source: "/api/files/:path*",
         headers: fileResponseHeaders,
+      };
+      const pluginPageRule = {
+        source: "/api/web-plugins/:id/files/:path*",
+        headers: pluginPageHeaders,
       };
       const rootNoCacheRule = {
         source: "/",
@@ -111,9 +128,9 @@ const nextConfig = (phase: string): NextConfig => {
 
       // Dev chunks have stable URLs whose content changes in place; caching
       // them immutably would serve stale module factories after a restart.
-      if (isDev) return [globalRule, fileRule, rootNoCacheRule];
+      if (isDev) return [globalRule, fileRule, pluginPageRule, rootNoCacheRule];
 
-      return [globalRule, fileRule, staticImmutableRule, rootNoCacheRule];
+      return [globalRule, fileRule, pluginPageRule, staticImmutableRule, rootNoCacheRule];
     },
     env: {
       NEXT_PUBLIC_APP_VERSION: version,

@@ -51,6 +51,31 @@ import toml from "react-syntax-highlighter/dist/esm/languages/prism/toml";
 import tsx from "react-syntax-highlighter/dist/esm/languages/prism/tsx";
 import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
 import yaml from "react-syntax-highlighter/dist/esm/languages/prism/yaml";
+import batch from "react-syntax-highlighter/dist/esm/languages/prism/batch";
+import clojure from "react-syntax-highlighter/dist/esm/languages/prism/clojure";
+import cmake from "react-syntax-highlighter/dist/esm/languages/prism/cmake";
+import dart from "react-syntax-highlighter/dist/esm/languages/prism/dart";
+import elixir from "react-syntax-highlighter/dist/esm/languages/prism/elixir";
+import erlang from "react-syntax-highlighter/dist/esm/languages/prism/erlang";
+import fsharp from "react-syntax-highlighter/dist/esm/languages/prism/fsharp";
+import groovy from "react-syntax-highlighter/dist/esm/languages/prism/groovy";
+import haskell from "react-syntax-highlighter/dist/esm/languages/prism/haskell";
+import julia from "react-syntax-highlighter/dist/esm/languages/prism/julia";
+import latex from "react-syntax-highlighter/dist/esm/languages/prism/latex";
+import lua from "react-syntax-highlighter/dist/esm/languages/prism/lua";
+import nix from "react-syntax-highlighter/dist/esm/languages/prism/nix";
+import ocaml from "react-syntax-highlighter/dist/esm/languages/prism/ocaml";
+import perl from "react-syntax-highlighter/dist/esm/languages/prism/perl";
+import php from "react-syntax-highlighter/dist/esm/languages/prism/php";
+import powershell from "react-syntax-highlighter/dist/esm/languages/prism/powershell";
+import properties from "react-syntax-highlighter/dist/esm/languages/prism/properties";
+import r from "react-syntax-highlighter/dist/esm/languages/prism/r";
+import scala from "react-syntax-highlighter/dist/esm/languages/prism/scala";
+import solidity from "react-syntax-highlighter/dist/esm/languages/prism/solidity";
+import verilog from "react-syntax-highlighter/dist/esm/languages/prism/verilog";
+import vhdl from "react-syntax-highlighter/dist/esm/languages/prism/vhdl";
+import vim from "react-syntax-highlighter/dist/esm/languages/prism/vim";
+import zig from "react-syntax-highlighter/dist/esm/languages/prism/zig";
 import vsTheme from "react-syntax-highlighter/dist/esm/styles/prism/vs";
 import vscDarkPlusTheme from "react-syntax-highlighter/dist/esm/styles/prism/vsc-dark-plus";
 
@@ -58,9 +83,11 @@ import vscDarkPlusTheme from "react-syntax-highlighter/dist/esm/styles/prism/vsc
 // sh, html, yml, dockerfile, ...) and register their own dependencies, so
 // registering under the canonical name is enough.
 const GRAMMARS: Record<string, unknown> = {
-  bash, c, cpp, csharp, css, diff, docker, go, graphql, hcl, ini, java,
-  javascript, json, jsx, kotlin, makefile, markdown, markup, protobuf,
-  python, ruby, rust, scss, sql, swift, toml, tsx, typescript, yaml,
+  bash, batch, c, clojure, cmake, cpp, csharp, css, dart, diff, docker, elixir, erlang,
+  fsharp, go, graphql, groovy, haskell, hcl, ini, java, javascript, json, jsx, julia, kotlin,
+  latex, lua, makefile, markdown, markup, nix, ocaml, perl, php, powershell, properties,
+  protobuf, python, r, ruby, rust, scala, scss, solidity, sql, swift, toml, tsx, typescript,
+  verilog, vhdl, vim, yaml, zig,
 };
 
 for (const [name, grammar] of Object.entries(GRAMMARS)) {

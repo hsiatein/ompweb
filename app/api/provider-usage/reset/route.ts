@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ProviderResetError, spendProviderReset } from "@/lib/provider-usage";
-import { PROVIDER_ACCOUNT_KEY_RE } from "@/lib/provider-usage-types";
+import { PROVIDER_ACCOUNT_KEY_RE, PROVIDER_RESET_CREDIT_ID_RE } from "@/lib/provider-usage-types";
 import { isRecord } from "@/lib/type-guards";
 
 export const dynamic = "force-dynamic";
@@ -19,8 +19,12 @@ export async function POST(req: Request) {
   if (typeof accountKey !== "string" || !PROVIDER_ACCOUNT_KEY_RE.test(accountKey)) {
     return NextResponse.json({ error: "accountKey must be a provider account key", code: "invalid_account_key" }, { status: 400 });
   }
+  const rawCreditId = isRecord(body) ? body.creditId : undefined;
+  if (rawCreditId !== undefined && (typeof rawCreditId !== "string" || !PROVIDER_RESET_CREDIT_ID_RE.test(rawCreditId))) {
+    return NextResponse.json({ error: "creditId must be a valid reset credit id", code: "invalid_credit_id" }, { status: 400 });
+  }
   try {
-    return NextResponse.json(await spendProviderReset(accountKey));
+    return NextResponse.json(await spendProviderReset(accountKey, rawCreditId));
   } catch (error) {
     if (error instanceof ProviderResetError) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });

@@ -1,5 +1,6 @@
 import type { ChatDraftFile, ChatDraftImage } from "@/lib/draft-store";
 import {
+  MAX_ATTACHED_TEXT_FILES,
   selectTextAttachments,
   type AttachedTextFileData,
 } from "@/lib/chat-attachments";
@@ -35,15 +36,19 @@ export function draftImagesToAttachedImages(images: ChatDraftImage[] | undefined
 }
 
 export function textFileToDraftFile(file: AttachedTextFile): ChatDraftFile {
-  return { name: file.name, mimeType: file.mimeType, content: file.content, size: file.size };
+  return { name: file.name, mimeType: file.mimeType, content: file.content, size: file.size, ...(file.uploadedPath ? { uploadedPath: file.uploadedPath } : {}) };
 }
 
 export function draftFilesToAttachedFiles(files: ChatDraftFile[] | undefined): AttachedTextFile[] {
   const shaped = (files ?? []).filter((file) => typeof file.name === "string"
     && typeof file.mimeType === "string"
     && typeof file.content === "string"
-    && Number.isFinite(file.size));
-  return selectTextAttachments(shaped, { usedBytes: 0, usedSlots: 0 }).accepted;
+    && Number.isFinite(file.size)
+    && (file.uploadedPath === undefined || typeof file.uploadedPath === "string"));
+  // Uploaded files only take a slot; the text budget covers inlined content.
+  const inline = selectTextAttachments(shaped.filter((file) => !file.uploadedPath), { usedBytes: 0, usedSlots: 0 }).accepted;
+  const uploaded = shaped.filter((file) => file.uploadedPath).slice(0, Math.max(0, MAX_ATTACHED_TEXT_FILES - inline.length));
+  return [...inline, ...uploaded];
 }
 
 export function revokeImagePreview(image: AttachedImage): void {

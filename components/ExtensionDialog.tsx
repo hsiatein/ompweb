@@ -22,11 +22,12 @@ export type ExtensionDialogResponse =
 type AskDraft = { selected: string[]; other: string };
 const EMPTY_ASK_DRAFT: AskDraft = { selected: [], other: "" };
 
-/** Single-select questions start on their recommended option. */
+/** Single-select questions start on their recommended option, multi-select ones on their checked options. */
 function initialAskDrafts(request: ExtensionDialogRequest): AskDraft[] {
   if (request.method !== "ask") return [];
   return request.questions.map((question) => {
-    const recommended = question.multi || question.recommended === undefined ? undefined : question.options[question.recommended];
+    if (question.multi) return { selected: question.options.filter((option) => option.checked).map((option) => option.label), other: "" };
+    const recommended = question.recommended === undefined ? undefined : question.options[question.recommended];
     return { selected: recommended ? [recommended.label] : [], other: "" };
   });
 }
@@ -317,8 +318,8 @@ export function ExtensionDialog({
                       );
                     })}
                     <textarea
-                      aria-label={t("chatWindow.askOther")}
-                      placeholder={t("chatWindow.askOther")}
+                      aria-label={question.options.length ? t("chatWindow.askOther") : t("chatWindow.askAnswer")}
+                      placeholder={question.options.length ? t("chatWindow.askOther") : t("chatWindow.askAnswer")}
                       value={draft.other}
                       rows={2}
                       onChange={(e) => {

@@ -33,6 +33,7 @@ import type { AccountPins } from "@/lib/account-choices";
 import { subscribeSessionsChanged } from "@/lib/session-change-bus";
 import { createSessionCatchUp, type SessionCatchUp, type SessionLiveFields } from "./useAgentSession-sync";
 import type { SessionLiveSnapshot } from "@/lib/session-sync";
+import { getHideCompactedHistory } from "@/lib/composer-prefs";
 import {
   mergeSubagentRoster,
   parseSubagentActivityEvent,
@@ -317,9 +318,13 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
   // Account choice for a chat with no session yet; sent with ensure_session
   // (lib/account-routing.ts). Live sessions store theirs server-side.
   const [pendingAccountPins, setPendingAccountPins] = useState<AccountPins>({});
+  const [pendingProviderPin, setPendingProviderPin] = useState<string | null>(null);
+  const [routingSessionId, setRoutingSessionId] = useState<string | null>(session?.id ?? null);
+  const [routingInitializing, setRoutingInitializing] = useState(false);
   const activeSubagentCount = subagents.filter((subagent) => subagent.source !== "history" && subagent.status === "started").length;
 
   const eventSourceRef = useRef<EventSource | null>(null);
+  const cancelEventConnectionRef = useRef<(() => void) | null>(null);
   const reconnectTimerRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const eventStreamRetryMsRef = useRef<number>(EVENT_STREAM_RETRY_MIN_MS);
   const sessionIdRef = useRef<string | null>(session?.id ?? null);
@@ -748,7 +753,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       // of a run that started while this fetch was in flight (it would delete
       // the new run's optimistic user bubble).
       if (fenceRunId !== undefined && promptRunIdRef.current !== fenceRunId) return null;
-      if (catchUp.view().leafId || catchUp.view().includePreCompaction) {
+      // A full-history view only differs when a compaction exists; otherwise
+      // the plain response already is that view (no second round trip).
+      const hasCompaction = d.context.messages.some((message) => message.role === "custom" && message.customType === "compaction");
+      if (catchUp.view().leafId || (catchUp.view().includePreCompaction && hasCompaction)) {
         await catchUp.request();
         if (sessionIdRef.current !== sid || contextRequestSeqRef.current !== requestSeq || promptRunIdRef.current !== requestRun) return null;
         d.context = catchUp.history() ?? d.context;
@@ -757,7 +765,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         const fullContext = d.context;
         d.context = catchUp.seed(fullContext, position);
         if (d.context === fullContext) setActiveLeafId(d.leafId);
-        setShowPreCompactionHistory(false);
+        setShowPreCompactionHistory(catchUp.view().includePreCompaction);
       }
       setData(d);
       // Recover on-disk subagent history (task toolResults) for this session —
@@ -896,6 +904,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     if (sessionIdRef.current) return sessionIdRef.current;
     if (!isNew || !newSessionCwd) return sessionIdRef.current;
     if (ensuringNewSessionRef.current) return ensuringNewSessionRef.current;
+    setRoutingInitializing(true);
 
     const promise = (async () => {
       const selectedModel = newSessionModel ?? newSessionDefaultModel;
@@ -912,12 +921,14 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
           ...(thinkingLevel !== "auto" ? { thinkingLevel } : {}),
           ...(advisorEnabled ? { advisor: true } : {}),
           ...(Object.keys(pendingAccountPins).length > 0 ? { accountPins: pendingAccountPins } : {}),
+          ...(pendingProviderPin ? { providerPin: pendingProviderPin } : {}),
         }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const result = await res.json() as { sessionId: string };
+      const result = await res.json() as { sessionId: string; error?: string };
+      if (!res.ok) throw new Error(result.error ?? `HTTP ${res.status}`);
       const realId = result.sessionId;
       sessionIdRef.current = realId;
+      setRoutingSessionId(realId);
       // The toggle handler could not persist while the chat had no id; carry
       // the pre-prompt choice over so it survives a reload after this point.
       if (advisorEnabled) {
@@ -936,8 +947,9 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       return await promise;
     } finally {
       ensuringNewSessionRef.current = null;
+      setRoutingInitializing(false);
     }
-  }, [advisorEnabled, isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, pendingAccountPins]);
+  }, [advisorEnabled, isNew, newSessionCwd, newSessionModel, newSessionDefaultModel, toolPreset, thinkingLevel, pendingAccountPins, pendingProviderPin]);
 
   // The system panel may initialize a dormant session, but must not create a
   // prompt or model run just to inspect the resolved system prompt.
@@ -1007,6 +1019,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     // tear down the healthy stream built here — drop it before replacing.
     clearTimeout(reconnectTimerRef.current);
     reconnectTimerRef.current = undefined;
+    cancelEventConnectionRef.current?.();
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
@@ -1031,8 +1044,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        if (cancelEventConnectionRef.current === cancelConnection) cancelEventConnectionRef.current = null;
         resolve({ status, source: es });
       };
+      const cancelConnection = () => settle("closed");
+      cancelEventConnectionRef.current = cancelConnection;
       const timeout = setTimeout(() => settle("timeout"), EVENT_STREAM_CONNECT_TIMEOUT_MS);
       // The stream is live as soon as the response headers land, whether or not
       // the server also sends an explicit `connected` frame. A successful open
@@ -1719,41 +1735,31 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     });
   }, []);
 
-  /** Turn a queued follow-up into a steer: pull it out of omp's follow-up
-   *  queue (`remove_queued_message`) and resend it as `steer`, so it lands at
-   *  the next turn boundary instead of after the whole run. Relabelling only
-   *  the mirror would leave omp delivering it as a follow-up. The mirror keeps
-   *  text only, so attachments on the original message are not carried over. */
+  /** Turn a queued follow-up into a steer with omp's `promote_queued_message`:
+   *  it moves the pending follow-up (attachments included) to the steering
+   *  queue, so it lands at the next turn boundary instead of after the whole
+   *  run. Relabelling only the mirror would leave omp delivering it as a
+   *  follow-up. */
   const promoteQueuedToSteer = useCallback(async (text: string) => {
     const sid = sessionIdRef.current;
     if (!text || !sid) return;
     try {
-      const result = await sendAgentCommand<{ removed?: boolean }>(sid, { type: "remove_queued_message", message: text, queue: "followUp" });
+      const result = await sendAgentCommand<{ promoted?: boolean }>(sid, { type: "promote_queued_message", message: text });
       // Not found: omp already delivered it (or it is gone); delivery clears the mirror.
-      if (!result?.removed) return;
+      if (!result?.promoted) return;
     } catch (e) {
       addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
       return;
     }
     queueMutatedAtRef.current = Date.now();
-    try {
-      await sendAgentCommand(sid, { type: "steer", message: text });
-      setQueuedMessages((prev) => {
-        const fi = prev.followUp.indexOf(text);
-        return {
-          steering: [...prev.steering, text],
-          followUp: fi === -1 ? prev.followUp : prev.followUp.filter((_, i) => i !== fi),
-        };
-      });
-    } catch (e) {
-      // The follow-up is already out of omp's queue: put it back rather than lose it.
-      addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
-      await sendAgentCommand(sid, { type: "follow_up", message: text }).catch(() => {
-        setQueuedMessages((prev) => ({ ...prev, followUp: prev.followUp.filter((item) => item !== text) }));
-        opts.chatInputRef?.current?.insertIfEmpty(text);
-      });
-    }
-  }, [addNotice, opts.chatInputRef]);
+    setQueuedMessages((prev) => {
+      const fi = prev.followUp.indexOf(text);
+      return {
+        steering: [...prev.steering, text],
+        followUp: fi === -1 ? prev.followUp : prev.followUp.filter((_, i) => i !== fi),
+      };
+    });
+  }, [addNotice]);
 
   // Mirror queued texts into sessionStorage so a reload can restore them.
   // The dirty gate keeps the initial empty state from wiping a stored queue
@@ -2151,6 +2157,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       }
       case "auto_retry_end":
         setRetryInfo(null);
+        // A failed final retry ends the turn with nothing in the transcript (omp drops the
+        // empty/failed turn), so this notice is the only trace of what went wrong.
+        if (event.success === false && typeof event.finalError === "string" && event.finalError) {
+          addNotice({ type: "error", message: event.finalError });
+        }
         break;
       case "auto_compaction_start":
         setIsCompacting(true);
@@ -2746,11 +2757,10 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     modelCommandPendingRef.current += 1;
     try {
       if (isNew) {
+        const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
+        if (sid) await sendAgentCommand(sid, { type: "set_model", provider, modelId });
         setNewSessionModel({ provider, modelId });
         setPendingModel({ provider, modelId });
-        const sid = sessionIdRef.current ?? await ensuringNewSessionRef.current;
-        if (!sid) return;
-        await sendAgentCommand(sid, { type: "set_model", provider, modelId });
         return;
       }
       const sid = sessionIdRef.current;
@@ -2759,11 +2769,11 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       setCurrentModelOverride({ provider, modelId });
       await refreshLiveModelState(sid);
     } catch (e) {
-      console.error("Failed to set model:", e);
+      addNotice({ type: "error", message: e instanceof Error ? e.message : String(e) });
     } finally {
       modelCommandPendingRef.current -= 1;
     }
-  }, [isNew, setNewSessionModel, refreshLiveModelState]);
+  }, [isNew, refreshLiveModelState, addNotice]);
 
   const handleFastModeChange = useCallback(async (enabled: boolean) => {
     // A brand-new session has no runtime yet: the model picker updates local
@@ -3246,11 +3256,12 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       if (mountedSessionLoadRef.current === session.id) return;
       mountedSessionLoadRef.current = session.id;
       sessionIdRef.current = session.id;
+      setRoutingSessionId(session.id);
       responseRunVersionRef.current += 1;
       runHadContentRef.current = false;
       lastQuotaErrorRef.current = null;
       lastRunErrorRef.current = null;
-      catchUp.select({ leafId: null, includePreCompaction: false });
+      catchUp.select({ leafId: null, includePreCompaction: !getHideCompactedHistory() });
       loadSession(session.id, true, true).then((loaded) => {
         if (!hookAliveRef.current || sessionIdRef.current !== session.id) return;
         const agentState = loaded?.agentState;
@@ -3332,6 +3343,7 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
       catchUp.disconnect();
       eventSourceRef.current?.close();
       eventSourceRef.current = null;
+      cancelEventConnectionRef.current?.();
       clearTimeout(reconnectTimerRef.current);
       reconnectTimerRef.current = undefined;
       if (rosterRefreshTimerRef.current) {
@@ -3501,6 +3513,8 @@ export function useAgentSession(opts: UseAgentSessionOptions) {
     notices: noticeState.visible, dismissNotice, extensionDialog, extensionCustomUi, extensionStatuses, extensionWidgets, respondToExtensionUi, sendExtensionCustomInput,
     advisorActive: advisorActiveAt > 0, advisorEnabled, handleAdvisorChange,
     pendingAccountPins, setPendingAccountPins,
+    pendingProviderPin, setPendingProviderPin,
+    routingSessionId, routingInitializing,
     subagents, subagentEvents, subagentTranscriptVersions, activeSubagentCount, currentTodoPhase, todoPhases,
     activeGoal, activePlan,
     isNew,

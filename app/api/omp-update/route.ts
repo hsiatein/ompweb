@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { isApiRequestOriginAllowed, shouldCheckApiRequestOrigin } from "@/lib/request-security";
 import { parseJsonWithinLimit, RequestBodyTooLargeError } from "@/lib/bounded-form-data";
 import { checkOmpUpdate } from "@/lib/omp/updates";
-import { restartAllRpcSessions } from "@/lib/rpc-manager";
+import { restartAllRpcSessions, WebRpcError } from "@/lib/rpc-manager";
 import {
   acknowledgeSelfUpdate,
   commitSelfUpdate,
@@ -18,6 +18,9 @@ export const dynamic = "force-dynamic";
 const OMP_KIND = "omp" as const;
 
 function errorResponse(error: unknown): NextResponse {
+  if (error instanceof WebRpcError) {
+    return NextResponse.json({ error: error.message, code: error.code }, { status: 409 });
+  }
   if (error instanceof SelfUpdateError) {
     return NextResponse.json({ error: error.message, code: error.code }, { status: error.httpStatus });
   }
@@ -36,7 +39,7 @@ export async function POST(request: Request) {
     if (!body || typeof body !== "object" || Array.isArray(body)) throw new SelfUpdateError("invalid_action", "action must be check, restart, update, status, or acknowledge");
     const keys = Object.keys(body);
     if (body.action === "check") {
-      return NextResponse.json(await checkOmpUpdate(body.force === true));
+      return NextResponse.json(await checkOmpUpdate());
     }
     if (body.action === "restart" && keys.length === 1) {
       const sessionsRestarted = await restartAllRpcSessions();

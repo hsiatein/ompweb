@@ -180,7 +180,8 @@ export interface RpcAskDialogQuestion {
   id: string;
   question: string;
   header?: string;
-  options: Array<{ label: string; description?: string; preview?: string }>;
+  /** `checked`: starts checked in a multi-select question (a form's preselected checkbox). */
+  options: Array<{ label: string; description?: string; preview?: string; checked?: boolean }>;
   multi?: boolean;
   /** Index into `options`. */
   recommended?: number;

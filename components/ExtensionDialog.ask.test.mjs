@@ -150,3 +150,17 @@ test("a new question reopens a collapsed attached panel with fresh answers", asy
   assert.ok(screen.getByRole("button", { expanded: true }));
   assert.equal(screen.getByRole("radio", { name: /Green/ }).checked, true);
 });
+
+test("multi-select options marked checked start checked and submit unless unticked; text-only questions ask for an answer", async () => {
+  const user = userEvent.setup();
+  const responses = renderAsk([
+    { id: "features", question: "Features?", multi: true, options: [{ label: "Star", checked: true }, { label: "Warmup" }, { label: "Delete", checked: true }] },
+    { id: "ttl", question: "Days", multi: true, options: [] },
+  ]);
+  assert.equal(screen.getByRole("checkbox", { name: /Star/ }).checked, true);
+  assert.equal(screen.getByRole("checkbox", { name: /Warmup/ }).checked, false);
+  assert.ok(screen.getByPlaceholderText("Your answer"));
+  await user.click(screen.getByRole("checkbox", { name: /Delete/ }));
+  await user.click(screen.getByRole("button", { name: "Submit" }));
+  assert.deepEqual(responses, [{ answers: [{ id: "features", selectedOptions: ["Star"] }, { id: "ttl", selectedOptions: [] }] }]);
+});

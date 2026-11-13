@@ -16,12 +16,21 @@ export async function PUT(req: Request) {
   } catch {
     return NextResponse.json({ error: "Invalid JSON request body", code: "invalid_json" }, { status: 400 });
   }
-  const autoResumeSessions = (body as { autoResumeSessions?: unknown } | null)?.autoResumeSessions;
-  if (typeof autoResumeSessions !== "boolean") {
-    return NextResponse.json({ error: "autoResumeSessions must be a boolean", code: "invalid_settings" }, { status: 400 });
+  const input = body as { autoResumeSessions?: unknown; subagentsEnabled?: unknown } | null;
+  const autoResumeSessions = input?.autoResumeSessions;
+  const subagentsEnabled = input?.subagentsEnabled;
+  if (
+    !input || typeof input !== "object" || Array.isArray(input)
+    || (autoResumeSessions === undefined && subagentsEnabled === undefined)
+    || (autoResumeSessions !== undefined && typeof autoResumeSessions !== "boolean")
+    || (subagentsEnabled !== undefined && typeof subagentsEnabled !== "boolean")
+  ) {
+    return NextResponse.json({ error: "Provide boolean autoResumeSessions or subagentsEnabled", code: "invalid_settings" }, { status: 400 });
   }
-  const settings = saveWebServerSettings({ autoResumeSessions });
-  // Apply to sessions that are already running, not only the next run.
-  syncInterruptibleSessions();
+  const settings = saveWebServerSettings({
+    ...(typeof autoResumeSessions === "boolean" ? { autoResumeSessions } : {}),
+    ...(typeof subagentsEnabled === "boolean" ? { subagentsEnabled } : {}),
+  });
+  if (autoResumeSessions !== undefined) syncInterruptibleSessions();
   return NextResponse.json(settings);
 }

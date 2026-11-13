@@ -23,7 +23,7 @@ test("custom and compaction messages expose glass surfaces without losing their 
     role: "custom", customType: "async-result", display: true, content, details: { jobs: 2 },
   } }));
   assert.ok(view.container.querySelector(".message-custom.wallpaper-surface"));
-  fireEvent.click(view.getByRole("button", { name: "2 background jobs have completed. Job bg_15: done." }));
+  fireEvent.click(view.getByRole("button", { name: "async-result" }));
   fireEvent.click(view.getByRole("button", { name: "Show details" }));
   assert.equal(view.container.querySelector("pre").textContent, content);
   assert.deepEqual(JSON.parse(view.container.querySelector(".message-custom > pre").textContent), { jobs: 2 });
@@ -35,6 +35,10 @@ test("custom and compaction messages expose glass surfaces without losing their 
     role: "custom", customType: "compaction", content: "Summary retained.", details: { tokensBefore: 1000, tokensAfter: 400 },
   } }));
   assert.ok(view.container.querySelector(".message-compaction.wallpaper-surface"));
+  // The model-oriented summary starts folded; the header still shows the event and its size.
+  assert.doesNotMatch(view.container.textContent, /Summary retained/);
+  assert.match(view.container.textContent, /1k → 400 tokens/);
+  fireEvent.click(view.getByRole("button", { name: /Conversation compacted/ }));
   assert.match(view.container.textContent, /Summary retained/);
 });
 
@@ -45,6 +49,8 @@ test("hidden extension glass survives expand, details and collapse", () => {
   } }));
   const toggle = view.container.querySelector(".message-hidden-toggle.wallpaper-surface");
   assert.ok(toggle);
+  assert.equal(view.container.textContent.includes("Extension content."), false);
+  assert.equal(view.queryByRole("button", { name: "Show details" }), null);
   fireEvent.click(toggle);
   assert.ok(view.container.querySelector(".message-hidden-content.wallpaper-surface"));
   fireEvent.click(view.getByRole("button", { name: "Show details" }));
@@ -399,7 +405,7 @@ test("async-only task details render the job as one started row", () => {
 });
 
 test("irc:incoming custom messages title with the sender name", () => {
-  const html = renderToStaticMarkup(React.createElement(MessageView, {
+  const view = render(React.createElement(MessageView, {
     message: {
       role: "custom",
       customType: "irc:incoming",
@@ -407,10 +413,11 @@ test("irc:incoming custom messages title with the sender name", () => {
       display: true,
     },
   }));
-  assert.match(html, /AuditUiComponents/);
-  assert.doesNotMatch(html, /irc:incoming/);
-  assert.match(html, /Please review the current tree/);
-  assert.doesNotMatch(html, /Incoming IRC message from agent/);
+  assert.equal(view.container.textContent.includes("AuditUiComponents"), true);
+  assert.equal(view.container.textContent.includes("Please review the current tree"), false);
+  fireEvent.click(view.getByRole("button", { name: /AuditUiComponents/ }));
+  assert.equal(view.container.textContent.includes("Please review the current tree"), true);
+  assert.equal(view.container.textContent.includes("Incoming IRC message from agent"), false);
 });
 
 test("hub send renders as an IRC row with the steered message", () => {
@@ -492,27 +499,18 @@ test("hub jobs without structured details keeps the raw result", () => {
   assert.match(html, /Still Running/);
 });
 
-test("advisor custom messages use the localized advisor label", () => {
-  const html = renderToStaticMarkup(React.createElement(MessageView, {
-    message: { role: "custom", customType: "advisor", content: "Consider handling the edge case.", display: true },
-  }));
-  assert.match(html, /Advisor/);
-  assert.match(html, /Consider handling the edge case/);
-  assert.doesNotMatch(html, /customType/);
-});
 
-test("async-result previews expand to the full verbatim output and preserve expansion across updates", () => {
+test("custom notices hide all content and actions until their header is expanded", () => {
   const output = "Background job bg_1 has completed.\n/root/repo\n---\n    indented output\n".repeat(5);
   const message = {
     role: "custom", customType: "async-result", display: true,
-    content: `<system-notice>\n${output}</system-notice>`,
+    content: `<system-notice>\n${output}</system-notice>`, details: { result: "private detail" },
   };
   const view = render(React.createElement(MessageView, { message }));
-  assert.equal(view.container.querySelector("pre"), null);
-  const preview = view.getByRole("button", { name: /^Background job bg_1/ });
-  assert.ok(preview.textContent.includes("Background job bg_1"));
-  assert.ok(preview.textContent.length < output.length);
-  fireEvent.click(preview);
+  assert.equal(view.container.textContent, "async-result");
+  assert.equal(view.queryByRole("button", { name: "Copy", exact: true }), null);
+  assert.equal(view.queryByRole("button", { name: "Show details" }), null);
+  fireEvent.click(view.getByRole("button", { name: "async-result" }));
   assert.equal(view.container.querySelector("pre").textContent, output.trim());
   assert.equal(view.container.querySelector("h2"), null);
   view.rerender(React.createElement(MessageView, { message: {
@@ -521,26 +519,46 @@ test("async-result previews expand to the full verbatim output and preserve expa
   assert.equal(view.container.querySelector("pre").textContent, `${output}Final result`);
   const toggle = view.getByRole("button", { name: "async-result" });
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
+  fireEvent.click(view.getByRole("button", { name: "Show details" }));
+  assert.equal(view.container.textContent.includes("private detail"), true);
   fireEvent.click(toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "false");
   assert.equal(view.container.querySelector("pre"), null);
+  assert.equal(view.container.textContent, "async-result");
+  assert.equal(view.queryByRole("button", { name: "Copy", exact: true }), null);
   fireEvent.click(toggle);
   assert.equal(toggle.getAttribute("aria-expanded"), "true");
   assert.equal(view.container.querySelector("pre").textContent, `${output}Final result`);
 });
 
-test("late LSP diagnostic notices keep their exact line layout and drop the wrapper tag", () => {
-  const html = renderToStaticMarkup(React.createElement(MessageView, {
-    message: {
-      role: "custom",
-      customType: "lsp-late-diagnostic",
-      content: "<system-notice>\nLate LSP diagnostics arrived after the edit returned:\n/repo/a.py — 0 error(s), 1 warning(s)\n/repo/a.py:8:1 [warning] [Ruff] Import block is un-sorted or un-formatted\n\nhelp: Organize imports (I001)\n</system-notice>",
-      display: true,
-    },
-  }));
-  assert.match(html, /<pre style="[^"]*white-space:pre;[^"]*">Late LSP diagnostics arrived after the edit returned:\n\/repo\/a\.py — 0 error\(s\), 1 warning\(s\)\n\/repo\/a\.py:8:1 \[warning\] \[Ruff\] Import block is un-sorted or un-formatted\n\nhelp: Organize imports \(I001\)<\/pre>/);
-  assert.doesNotMatch(html, /system-notice/);
-});
+for (const customType of ["lsp-late-diagnostic", "advisor", "extension_debug", "future-notice"]) {
+  test(`${customType} starts fully folded and preserves the manual choice during updates`, () => {
+    const message = {
+      role: "custom", customType, display: true,
+      content: [{ type: "text", text: "Notice body\n    precise indentation" },
+        { type: "image", data: "QUJD", mimeType: "image/png" }],
+    };
+    const view = render(React.createElement(MessageView, { message }));
+    const header = view.getByRole("button");
+    assert.equal(header.getAttribute("aria-expanded"), "false");
+    assert.equal(view.container.textContent.includes("Notice body"), false);
+    assert.equal(view.container.querySelector("img"), null);
+    view.rerender(React.createElement(MessageView, { message: { ...message, content: "Updated body" } }));
+    assert.equal(view.container.textContent.includes("Updated body"), false);
+    fireEvent.click(header);
+    assert.equal(header.getAttribute("aria-expanded"), "true");
+    assert.equal(view.container.textContent.includes("Updated body"), true);
+    view.rerender(React.createElement(MessageView, { message }));
+    assert.equal(header.getAttribute("aria-expanded"), "true");
+    assert.equal(view.container.querySelector("img").getAttribute("src"), "data:image/png;base64,QUJD");
+    if (customType === "lsp-late-diagnostic") {
+      assert.equal(view.container.querySelector("pre").textContent, "Notice body\n    precise indentation");
+    }
+    fireEvent.click(header);
+    assert.equal(view.container.textContent.includes("Notice body"), false);
+    assert.equal(view.container.querySelector("img"), null);
+  });
+}
 
 
 test("a running tool call shows a spinner instead of the no-result marker", () => {

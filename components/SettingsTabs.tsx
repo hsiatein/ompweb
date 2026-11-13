@@ -127,13 +127,8 @@ export function SettingsTabs({
                   />
                 )}
               </span>
-              <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 2 }}>
-                <div style={{ fontSize: 13, fontWeight: selected ? 600 : 500, lineHeight: 1.3, color: selected ? "var(--text)" : "inherit" }}>
-                  {displayLabel}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--text-dim)", lineHeight: 1.35, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                  {displayDescription}
-                </div>
+              <div style={{ flex: 1, minWidth: 0, fontSize: 13, fontWeight: selected ? 600 : 500, lineHeight: 1.3, color: selected ? "var(--text)" : "inherit" }}>
+                {displayLabel}
               </div>
             </button>
           );
@@ -170,7 +165,7 @@ export function SettingsTabs({
             disabled={disabled}
             onClick={() => onSelect(id)}
             onKeyDown={(event) => onKeyDown(event, index)}
-            style={{ display: "inline-flex", alignItems: "flex-start", gap: 5, padding: "6px 9px", border: "none", borderRadius: "var(--radius-control)", background: selected ? "var(--bg-selected)" : "transparent", color: selected ? "var(--text)" : "var(--text-muted)", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1, fontSize: 12, whiteSpace: "nowrap", textAlign: "left", minWidth: 150 }}
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: "6px 9px", border: "none", borderRadius: "var(--radius-control)", background: selected ? "var(--bg-selected)" : "transparent", color: selected ? "var(--text)" : "var(--text-muted)", cursor: disabled ? "not-allowed" : "pointer", opacity: disabled ? 0.45 : 1, fontSize: 12, whiteSpace: "nowrap", textAlign: "left" }}
           >
             <span style={{ position: "relative", display: "inline-flex", flexShrink: 0, marginTop: 1 }}>
               <Icon size={13} aria-hidden="true" />
@@ -190,10 +185,7 @@ export function SettingsTabs({
                 />
               )}
             </span>
-            <span style={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
-              <span style={{ fontWeight: selected ? 600 : 500 }}>{displayLabel}</span>
-              <span style={{ maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", color: "var(--text-muted)", fontSize: 10, fontWeight: 400, lineHeight: 1.25 }}>{displayDescription}</span>
-            </span>
+            <span style={{ fontWeight: selected ? 600 : 500 }}>{displayLabel}</span>
           </button>
         );
       })}

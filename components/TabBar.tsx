@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { Activity, AtSign, Copy, Download, Folder, GitBranch, LocateFixed, SquareTerminal, X } from "lucide-react";
+import { Activity, AtSign, Copy, Download, Folder, GitBranch, LayoutDashboard, LocateFixed, SquareTerminal, X } from "lucide-react";
+import { PluginIcon } from "./PluginsPanel";
 import { useI18n } from "@/lib/i18n";
 import { contributeContextMenu, type ContextMenuItem } from "@/lib/context-menu";
 import { getFileIcon } from "./FileIcons";
@@ -38,6 +39,16 @@ interface Props {
   onSelectSystem?: () => void;
   /** Amber dot on the System tab: available memory is in the warning band. */
   systemWarning?: boolean;
+  /** Pinned Status board tab rendered after System. */
+  statusSelected?: boolean;
+  onSelectStatus?: () => void;
+  /** Live (running/paused) status items, and whether any failed (red dot). */
+  statusBadge?: { live: number; failed: boolean };
+  /** The open web plugin page, rendered as a closable tab after System. */
+  pluginTab?: { name: string; iconUrl: string | null } | null;
+  pluginSelected?: boolean;
+  onSelectPlugin?: () => void;
+  onClosePlugin?: () => void;
   /** File-tab right-click actions; each acts on the tab that was clicked. */
   onCloseOtherTabs?: (id: string) => void;
   onCloseAllTabs?: () => void;
@@ -47,7 +58,7 @@ interface Props {
   onDownloadTab?: (id: string) => void;
 }
 
-export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, explorerSelected = false, onSelectExplorer, explorerBadge = 0, gitSelected = false, onSelectGit, gitBadge = 0, terminalSelected = false, onSelectTerminal, systemSelected = false, onSelectSystem, systemWarning = false, onCloseOtherTabs, onCloseAllTabs, onMentionTab, onCopyTabPath, onRevealTab, onDownloadTab }: Props) {
+export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, explorerSelected = false, onSelectExplorer, explorerBadge = 0, gitSelected = false, onSelectGit, gitBadge = 0, terminalSelected = false, onSelectTerminal, systemSelected = false, onSelectSystem, systemWarning = false, statusSelected = false, onSelectStatus, statusBadge, pluginTab = null, pluginSelected = false, onSelectPlugin, onClosePlugin, onCloseOtherTabs, onCloseAllTabs, onMentionTab, onCopyTabPath, onRevealTab, onDownloadTab }: Props) {
   const { t } = useI18n();
   const shortcutBindings = useShortcuts();
   const [hoveredClose, setHoveredClose] = useState<string | null>(null);
@@ -57,6 +68,8 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, explorerSel
     ...(onSelectGit ? ["git"] : []),
     ...(onSelectTerminal ? ["terminal"] : []),
     ...(onSelectSystem ? ["system"] : []),
+    ...(onSelectStatus ? ["status"] : []),
+    ...(pluginTab && onSelectPlugin ? ["plugin"] : []),
     ...tabs.map((tab) => tab.id),
   ];
 
@@ -65,6 +78,8 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, explorerSel
     else if (id === "git") onSelectGit?.();
     else if (id === "terminal") onSelectTerminal?.();
     else if (id === "system") onSelectSystem?.();
+    else if (id === "status") onSelectStatus?.();
+    else if (id === "plugin") onSelectPlugin?.();
     else {
       const tab = tabs.find((item) => item.id === id);
       if (tab) onSelectTab(tab.id);
@@ -119,6 +134,23 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, explorerSel
       list.scrollLeft += tabRect.right - listRect.right;
     }
   }, [activeTabId, tabs]);
+
+  // A mouse wheel only scrolls vertically; turn it into horizontal scrolling
+  // of the tab strip. Native listener: React's onWheel is passive and cannot
+  // preventDefault. Trackpad sideways swipes (deltaX) keep their own behavior.
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) return;
+    const onWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+      if (list.scrollWidth <= list.clientWidth) return;
+      const step = event.deltaMode === WheelEvent.DOM_DELTA_LINE ? event.deltaY * 16 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE ? event.deltaY * list.clientWidth : event.deltaY;
+      event.preventDefault();
+      list.scrollLeft += step;
+    };
+    list.addEventListener("wheel", onWheel, { passive: false });
+    return () => list.removeEventListener("wheel", onWheel);
+  }, []);
 
   return (
     <div
@@ -381,6 +413,133 @@ export function TabBar({ tabs, activeTabId, onSelectTab, onCloseTab, explorerSel
             {t("systemPanel.title")}
           </span>
           {systemWarning && <span aria-hidden="true" style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--status-warning)", flexShrink: 0 }} />}
+        </div>
+      )}
+      {onSelectStatus && (
+        <div
+          data-tab-id="status"
+          className="tabbar-tab ui-focus-ring"
+          onClick={onSelectStatus}
+          role="tab"
+          tabIndex={statusSelected ? 0 : -1}
+          aria-selected={statusSelected}
+          aria-label={t("statusBoard.title")}
+          aria-controls="workspace-file-panel-status"
+          title={t("statusBoard.title")}
+          onKeyDown={(event) => handleTabKeyDown(event, "status")}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            height: "var(--tab-height)",
+            paddingLeft: 12,
+            paddingRight: 10,
+            borderRight: "1px solid var(--border)",
+            background: statusSelected ? "var(--bg)" : "var(--bg-panel)",
+            cursor: "pointer",
+            fontSize: "var(--text-sm)",
+            color: statusSelected ? "var(--text)" : "var(--text-muted)",
+            whiteSpace: "nowrap",
+            flexShrink: 0,
+            userSelect: "none",
+            position: "relative",
+            transition: `background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)`,
+          }}
+        >
+          {statusSelected && (
+            <span
+              aria-hidden="true"
+              style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, background: "var(--accent)", borderTopLeftRadius: "var(--radius-control)", borderTopRightRadius: "var(--radius-control)" }}
+            />
+          )}
+          <span style={{ flexShrink: 0, opacity: statusSelected ? 1 : 0.7, display: "flex", alignItems: "center", color: statusSelected ? "var(--accent)" : undefined }}>
+            <LayoutDashboard size={13} strokeWidth={2} aria-hidden="true" />
+          </span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", fontWeight: statusSelected ? 500 : 400 }}>
+            {t("statusBoard.title")}
+          </span>
+          {statusBadge && statusBadge.live > 0 && (
+            <span style={{ minWidth: 16, height: 16, padding: "0 4px", borderRadius: 8, background: "var(--bg-hover)", color: "var(--text-muted)", fontSize: 10, lineHeight: "16px", textAlign: "center", fontVariantNumeric: "tabular-nums" }}>{statusBadge.live}</span>
+          )}
+          {statusBadge?.failed && <span aria-label={t("statusBoard.state.failed")} style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--status-error)", flexShrink: 0 }} />}
+        </div>
+      )}
+      {pluginTab && onSelectPlugin && (
+        <div
+          data-tab-id="plugin"
+          className="tabbar-tab ui-focus-ring"
+          onClick={onSelectPlugin}
+          role="tab"
+          tabIndex={pluginSelected ? 0 : -1}
+          aria-selected={pluginSelected}
+          aria-label={pluginTab.name}
+          aria-controls="workspace-file-panel-plugin"
+          title={pluginTab.name}
+          onKeyDown={(event) => handleTabKeyDown(event, "plugin")}
+          onMouseDown={(e) => { if (e.button === 1) e.preventDefault(); }}
+          onAuxClick={(e) => {
+            if (e.button !== 1) return;
+            e.preventDefault();
+            e.stopPropagation();
+            onClosePlugin?.();
+          }}
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 6,
+            height: "var(--tab-height)",
+            paddingLeft: 12,
+            paddingRight: 6,
+            borderRight: "1px solid var(--border)",
+            background: pluginSelected ? "var(--bg)" : "var(--bg-panel)",
+            cursor: "pointer",
+            fontSize: "var(--text-sm)",
+            color: pluginSelected ? "var(--text)" : "var(--text-muted)",
+            whiteSpace: "nowrap",
+            maxWidth: 180,
+            flexShrink: 0,
+            userSelect: "none",
+            position: "relative",
+            transition: `background var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm)`,
+          }}
+        >
+          {pluginSelected && (
+            <span
+              aria-hidden="true"
+              style={{ position: "absolute", left: 0, right: 0, bottom: 0, height: 2, background: "var(--accent)", borderTopLeftRadius: "var(--radius-control)", borderTopRightRadius: "var(--radius-control)" }}
+            />
+          )}
+          <span style={{ flexShrink: 0, opacity: pluginSelected ? 1 : 0.7, display: "flex", alignItems: "center" }}>
+            <PluginIcon iconUrl={pluginTab.iconUrl} size={13} />
+          </span>
+          <span style={{ overflow: "hidden", textOverflow: "ellipsis", flex: 1, fontWeight: pluginSelected ? 500 : 400 }}>
+            {pluginTab.name}
+          </span>
+          {onClosePlugin && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onClosePlugin(); }}
+              tabIndex={pluginSelected ? 0 : -1}
+              onKeyDown={(event) => event.stopPropagation()}
+              onMouseEnter={() => setHoveredClose("plugin")}
+              onMouseLeave={() => setHoveredClose(null)}
+              style={{
+                display: "flex", alignItems: "center", justifyContent: "center",
+                width: "var(--icon-control-size-compact)", height: "var(--icon-control-size-compact)",
+                background: hoveredClose === "plugin" ? "var(--bg-hover)" : "transparent",
+                border: "none",
+                borderRadius: "var(--radius-control)",
+                color: hoveredClose === "plugin" ? "var(--text)" : "var(--text-dim)",
+                cursor: "pointer",
+                padding: 0,
+                flexShrink: 0,
+              }}
+              title={t("plugins.close")}
+              aria-label={t("plugins.close")}
+            >
+              <X size={11} strokeWidth={2} aria-hidden="true" />
+            </button>
+          )}
         </div>
       )}
       {tabs.map((tab) => {

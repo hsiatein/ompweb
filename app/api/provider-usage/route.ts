@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getProviderUsage } from "@/lib/provider-usage";
 import { loadWebServerSettings } from "@/lib/web-settings";
+import { loadAccountRouting } from "@/lib/account-routing";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,19 @@ export async function GET(request: Request) {
   }
 
   try {
-    return NextResponse.json(await getProviderUsage({ provider, modelId }, loadWebServerSettings().accountAliases));
+    const snapshot = await getProviderUsage({ provider, modelId }, loadWebServerSettings().accountAliases);
+    // Apply live permissions after the usage cache: disabling an account must
+    // be visible immediately while its quota report remains useful in Settings.
+    const routing = loadAccountRouting();
+    const disabledProviders = new Set(routing.disabledProviders);
+    const disabledAccounts = new Set(routing.disabled);
+    return NextResponse.json({
+      ...snapshot,
+      reports: snapshot.reports.map(report => ({
+        ...report,
+        disabled: disabledProviders.has(report.provider) || disabledAccounts.has(report.accountKey),
+      })),
+    });
   } catch {
     return NextResponse.json(
       { error: "Provider usage is currently unavailable", code: "provider_usage_unavailable" },

@@ -9,11 +9,12 @@ import { WallpaperControls } from "./WallpaperControls";
 import { WallpaperCrop } from "./WallpaperCrop";
 import { WallpaperBgmConfig } from "./WallpaperBgmConfig";
 import { Select } from "./ui/field";
+import { sceneManifest } from "@/lib/wallpaper-client-cache";
+import type { SceneForm } from "@/lib/wallpaper-scene-types";
 
 type Library = { wallpapers: WallpaperInfo[]; roots: string[]; warnings: string[] };
 export function WallpapersConfig() {
   const { locale, t } = useI18n();
-  const zh = locale.startsWith("zh");
   const { preferences: p, update } = useWallpaperPreferences();
   const mobile = useIsMobile();
   const [colorDraft, setColorDraft] = useState<string | null>(null);
@@ -29,6 +30,15 @@ export function WallpapersConfig() {
   const [query, setQuery] = useState("");
   const [folder, setFolder] = useState("");
   const [sceneAvailable, setSceneAvailable] = useState(false);
+  const [formCatalog, setFormCatalog] = useState<{ id: string; forms: SceneForm[] } | null>(null);
+  useEffect(() => {
+    if (!p.id || p.kind !== "scene") return;
+    const id = p.id, controller = new AbortController();
+    void sceneManifest(id, controller.signal).then(scene => {
+      if (!controller.signal.aborted) setFormCatalog({ id, forms: scene.forms || [] });
+    }).catch(error => { if (!controller.signal.aborted) setError(String(error.message)); });
+    return () => controller.abort();
+  }, [p.id, p.kind]);
   const input = useRef<HTMLInputElement>(null);
   const upload = useRef<XMLHttpRequest | null>(null);
   const refresh = useCallback(async (signal?: AbortSignal) => {
@@ -54,7 +64,7 @@ export function WallpapersConfig() {
     await refresh();
   }
   function importFile(file: File) {
-    if (file.size > 512 * 1024 * 1024) { setError(zh ? "文件上限 512 MiB；大视频请添加服务器文件夹。" : "Upload limit: 512 MiB. Add a server folder for larger videos."); return; }
+    if (file.size > 512 * 1024 * 1024) { setError(t("wallpaper.uploadLimit")); return; }
     void action(async () => {
       setProgress(0);
       try {
@@ -64,10 +74,10 @@ export function WallpapersConfig() {
           xhr.upload.onprogress = e => { if (e.lengthComputable) setProgress(Math.round(100 * e.loaded / e.total)); };
           xhr.onload = () => {
             try { const result = JSON.parse(xhr.responseText); if (xhr.status >= 400) reject(new Error(result.error)); else resolve(result); }
-            catch { reject(new Error(zh ? "上传失败" : "Upload failed")); }
+            catch { reject(new Error(t("wallpaper.uploadFailed"))); }
           };
-          xhr.onerror = () => reject(new Error(zh ? "上传连接中断" : "Upload connection failed"));
-          xhr.onabort = () => reject(new Error(zh ? "上传已取消" : "Upload cancelled"));
+          xhr.onerror = () => reject(new Error(t("wallpaper.uploadConnectionFailed")));
+          xhr.onabort = () => reject(new Error(t("wallpaper.uploadCancelled")));
           xhr.send(file);
         });
         update({ ...data, paused: false });
@@ -76,73 +86,91 @@ export function WallpapersConfig() {
     });
   }
   const visible = useMemo(() => selectWallpapers(library.wallpapers, { query, orientation: p.libraryOrientation, kind: p.libraryKind, sort: p.librarySort, mobile, locale }), [library.wallpapers, query, p.libraryOrientation, p.libraryKind, p.librarySort, mobile, locale]);
-  const kindName = (w: WallpaperInfo) => w.kind === "web" ? (zh ? "网页 · 本地渲染" : "Web · local rendering") : w.kind === "scene" ? (sceneAvailable ? (zh ? "场景 · 本地高清" : "Scene · local HD") : (zh ? "场景 · 加载中" : "Scene · loading")) : w.kind === "unsupported" ? (w.reason || (zh ? "暂不支持" : "Unsupported")) : w.kind === "video" ? (zh ? "视频" : "Video") : (zh ? "图片" : "Image");
+  const kindName = (w: WallpaperInfo) => w.kind === "web" ? t("wallpaper.webLocalRendering") : w.kind === "scene" ? (sceneAvailable ? t("wallpaper.sceneLocalHd") : t("wallpaper.sceneLoading")) : w.kind === "unsupported" ? (w.reason || t("wallpaper.unsupported")) : w.kind === "video" ? t("wallpaper.video") : t("wallpaper.image");
+  const forms = formCatalog?.id === p.id ? formCatalog.forms : [];
+  const selectedForm = forms.find(form => form.id === p.sceneForms[p.id || ""])?.id || "";
   return <section aria-labelledby="appearance-wallpapers-heading" className="wallpaper-settings">
     <div className="wallpaper-toolbar">
       <h3 id="appearance-wallpapers-heading">{t("settingsConfig.appearance.wallpapers")}</h3>
-      <button type="button" className="wallpaper-command" disabled={busy} onClick={() => input.current?.click()}><Upload size={15} />{zh ? "导入" : "Import"}</button>
-      <button type="button" className="wallpaper-icon" title={zh ? "刷新壁纸库" : "Refresh library"} aria-label={zh ? "刷新壁纸库" : "Refresh library"} disabled={busy} onClick={() => void action(() => refresh())}><RefreshCw size={16} /></button>
-      <button type="button" className="wallpaper-icon" title={zh ? "关闭壁纸" : "Disable wallpaper"} aria-label={zh ? "关闭壁纸" : "Disable wallpaper"} disabled={!p.id} onClick={() => update({ id: null })}><Power size={16} /></button>
+      <button type="button" className="wallpaper-command" disabled={busy} onClick={() => input.current?.click()}><Upload size={15} />{t("wallpaper.import")}</button>
+      <button type="button" className="wallpaper-icon" title={t("wallpaper.refreshLibrary")} aria-label={t("wallpaper.refreshLibrary")} disabled={busy} onClick={() => void action(() => refresh())}><RefreshCw size={16} /></button>
+      <button type="button" className="wallpaper-icon" title={t("wallpaper.disableWallpaper")} aria-label={t("wallpaper.disableWallpaper")} disabled={!p.id} onClick={() => update({ id: null })}><Power size={16} /></button>
       <input ref={input} type="file" hidden accept=".png,.jpg,.jpeg,.webp,.gif,.avif,.mp4,.webm" onChange={e => { const file = e.target.files?.[0]; e.target.value = ""; if (file) importFile(file); }} />
     </div>
     <div className="wallpaper-options">
       <WallpaperControls />
-      <label><input type="checkbox" checked={p.adaptiveText} onChange={e => update({ adaptiveText: e.target.checked })} />{zh ? "文字配色" : "Text colors"}</label>
+      {p.id && p.kind === "scene" && <label>{t("wallpaper.form")}<Select
+        aria-label={t("wallpaper.wallpaperForm")}
+        disabled={formCatalog?.id !== p.id || !forms.length}
+        value={selectedForm}
+        onChange={value => {
+          const sceneForms = { ...p.sceneForms };
+          if (value) sceneForms[p.id!] = value; else delete sceneForms[p.id!];
+          update({ sceneForms });
+        }}
+        options={[
+          { value: "", label: formCatalog?.id !== p.id ? t("wallpaper.loadingForms") : t("wallpaper.original") },
+          ...forms.map(form => ({ value: form.id, label: form.label
+            ? `${t("wallpaper.fixed")} · ${form.label}${form.xray ? " · XRAY" : ""}`
+            : form.xray ? t("wallpaper.fixedXRay") : t("wallpaper.fixedBaseImage") })),
+        ]}
+      /></label>}
+      <label><input type="checkbox" checked={p.adaptiveText} onChange={e => update({ adaptiveText: e.target.checked })} />{t("wallpaper.textColors")}</label>
       <Select
-        aria-label={zh ? "文字配色模式" : "Text color mode"}
+        aria-label={t("wallpaper.textColorMode")}
         disabled={!p.adaptiveText}
         value={p.textMode}
         onChange={(nextValue) => update({ textMode: nextValue as WallpaperTextMode })}
         options={[
-          { value: "fixed", label: zh ? "固定颜色" : "Fixed color" },
-          { value: "auto", label: zh ? "自动黑白" : "Automatic black / white" },
-          { value: "material", label: zh ? "Material 配色" : "Material colors" },
+          { value: "fixed", label: t("wallpaper.fixedColor") },
+          { value: "auto", label: t("wallpaper.automaticBlackWhite") },
+          { value: "material", label: t("wallpaper.materialColors") },
         ]}
       />
       {p.textMode === "fixed" && <span className="wallpaper-text-color">
-        <input type="color" aria-label={zh ? "文字颜色" : "Text color"} disabled={!p.adaptiveText} value={p.textColor} onChange={e => { setColorDraft(null); update({ textColor: e.target.value }); }} />
-        <input type="text" aria-label={zh ? "文字颜色 HEX" : "Text color HEX"} disabled={!p.adaptiveText} value={colorInput} maxLength={7} spellCheck={false} onChange={e => setColorDraft(e.target.value)} onBlur={commitColor} onKeyDown={e => {
+        <input type="color" aria-label={t("wallpaper.textColor")} disabled={!p.adaptiveText} value={p.textColor} onChange={e => { setColorDraft(null); update({ textColor: e.target.value }); }} />
+        <input type="text" aria-label={t("wallpaper.textColorHex")} disabled={!p.adaptiveText} value={colorInput} maxLength={7} spellCheck={false} onChange={e => setColorDraft(e.target.value)} onBlur={commitColor} onKeyDown={e => {
           if (e.key === "Enter") { e.preventDefault(); commitColor(); }
           if (e.key === "Escape") setColorDraft(null);
         }} />
       </span>}
-      <label><input type="checkbox" checked={p.adaptivePalette} onChange={e => update({ adaptivePalette: e.target.checked })} />{zh ? "壁纸配色" : "Wallpaper colors"}<span className="wallpaper-palette-swatches" aria-hidden="true"><i /><i /><i /></span></label>
-      <label>{zh ? "填充" : "Fit"}<Select
+      <label><input type="checkbox" checked={p.adaptivePalette} onChange={e => update({ adaptivePalette: e.target.checked })} />{t("wallpaper.wallpaperColors")}<span className="wallpaper-palette-swatches" aria-hidden="true"><i /><i /><i /></span></label>
+      <label>{t("wallpaper.fit")}<Select
         value={p.fit}
         onChange={(nextValue) => update({ fit: nextValue as "cover" | "contain" })}
         options={[
-          { value: "cover", label: zh ? "铺满" : "Cover" },
-          { value: "contain", label: zh ? "完整显示" : "Contain" },
+          { value: "cover", label: t("wallpaper.cover") },
+          { value: "contain", label: t("wallpaper.contain") },
         ]}
       /></label>
-      <label>{zh ? "亮度" : "Brightness"}<input aria-label={zh ? "壁纸亮度" : "Wallpaper brightness"} type="range" min="20" max="100" value={p.brightness} onChange={e => update({ brightness: Number(e.target.value) })} /><output>{p.brightness}%</output></label>
-      <label>{zh ? "玻璃不透明度" : "Glass opacity"}<input aria-label={zh ? "玻璃不透明度" : "Glass opacity"} type="range" min="0" max="100" disabled={p.glass === "clear"} value={p.glassOpacity} onChange={e => update({ glassOpacity: Number(e.target.value) })} /><output>{p.glassOpacity}%</output></label>
+      <label>{t("wallpaper.brightness")}<input aria-label={t("wallpaper.wallpaperBrightness")} type="range" min="20" max="100" value={p.brightness} onChange={e => update({ brightness: Number(e.target.value) })} /><output>{p.brightness}%</output></label>
+      <label>{t("wallpaper.glassOpacity")}<input aria-label={t("wallpaper.glassOpacity")} type="range" min="0" max="100" disabled={p.glass === "clear"} value={p.glassOpacity} onChange={e => update({ glassOpacity: Number(e.target.value) })} /><output>{p.glassOpacity}%</output></label>
     </div>
     {p.id && p.kind !== "web" && <WallpaperCrop key={p.id} />}
     <WallpaperBgmConfig />
     <form className="wallpaper-folder" onSubmit={e => { e.preventDefault(); void action(async () => { await mutate("POST", { folder }); setFolder(""); }); }}>
-      <input aria-label={zh ? "服务器壁纸文件夹" : "Server wallpaper folder"} placeholder={zh ? "服务器壁纸文件夹的完整路径" : "Absolute server wallpaper folder"} value={folder} onChange={e => setFolder(e.target.value)} />
-      <button className="wallpaper-icon" type="submit" disabled={busy || !folder.trim()} title={zh ? "添加文件夹" : "Add folder"} aria-label={zh ? "添加文件夹" : "Add folder"}><FolderPlus size={17} /></button>
+      <input aria-label={t("wallpaper.serverWallpaperFolder")} placeholder={t("wallpaper.absoluteServerWallpaperFolder")} value={folder} onChange={e => setFolder(e.target.value)} />
+      <button className="wallpaper-icon" type="submit" disabled={busy || !folder.trim()} title={t("wallpaper.addFolder")} aria-label={t("wallpaper.addFolder")}><FolderPlus size={17} /></button>
     </form>
-    {progress !== null && <div className="wallpaper-progress" role="status"><progress value={progress} max="100" /><span>{progress}%</span><button type="button" onClick={() => upload.current?.abort()}>{zh ? "取消" : "Cancel"}</button></div>}
+    {progress !== null && <div className="wallpaper-progress" role="status"><progress value={progress} max="100" /><span>{progress}%</span><button type="button" onClick={() => upload.current?.abort()}>{t("wallpaper.cancel")}</button></div>}
     {error && <p role="alert" className="wallpaper-warning">{error}</p>}
-    <div className="wallpaper-library-heading"><span>{visible.length} / {library.wallpapers.length} {zh ? "项" : "items"}</span><input type="search" aria-label={zh ? "搜索壁纸" : "Search wallpapers"} placeholder={zh ? "搜索壁纸" : "Search wallpapers"} value={query} onChange={e => setQuery(e.target.value)} /></div>
+    <div className="wallpaper-library-heading"><span>{visible.length} / {library.wallpapers.length} {t("wallpaper.items")}</span><input type="search" aria-label={t("wallpaper.searchWallpapers")} placeholder={t("wallpaper.searchWallpapers")} value={query} onChange={e => setQuery(e.target.value)} /></div>
     <div className="wallpaper-library-filters">
-      <Select aria-label={zh ? "壁纸方向" : "Wallpaper orientation"} value={p.libraryOrientation} onChange={value => update({ libraryOrientation: value as WallpaperOrientation })} options={[
-        { value: "auto", label: zh ? `自动（${mobile ? "竖屏" : "横屏"}）` : `Automatic (${mobile ? "portrait" : "landscape"})` },
-        { value: "all", label: zh ? "全部方向" : "All orientations" },
-        { value: "landscape", label: zh ? "横屏" : "Landscape" }, { value: "portrait", label: zh ? "竖屏" : "Portrait" },
-        { value: "square", label: zh ? "正方形" : "Square" }, { value: "unknown", label: zh ? "尺寸未知" : "Unknown dimensions" },
+      <Select aria-label={t("wallpaper.wallpaperOrientation")} value={p.libraryOrientation} onChange={value => update({ libraryOrientation: value as WallpaperOrientation })} options={[
+        { value: "auto", label: t("wallpaper.orientationAuto", { orientation: t(mobile ? "wallpaper.portrait" : "wallpaper.landscape") }) },
+        { value: "all", label: t("wallpaper.allOrientations") },
+        { value: "landscape", label: t("wallpaper.landscape") }, { value: "portrait", label: t("wallpaper.portrait") },
+        { value: "square", label: t("wallpaper.square") }, { value: "unknown", label: t("wallpaper.unknownDimensions") },
       ]} />
-      <Select aria-label={zh ? "壁纸类型" : "Wallpaper type"} value={p.libraryKind} onChange={value => update({ libraryKind: value as WallpaperKindFilter })} options={[
-        { value: "all", label: zh ? "全部类型" : "All types" }, { value: "image", label: zh ? "图片" : "Images" },
-        { value: "video", label: zh ? "视频" : "Videos" }, { value: "scene", label: zh ? "场景" : "Scenes" },
-        { value: "web", label: zh ? "网页" : "Web" }, { value: "unsupported", label: zh ? "其他格式" : "Other formats" },
+      <Select aria-label={t("wallpaper.wallpaperType")} value={p.libraryKind} onChange={value => update({ libraryKind: value as WallpaperKindFilter })} options={[
+        { value: "all", label: t("wallpaper.allTypes") }, { value: "image", label: t("wallpaper.images") },
+        { value: "video", label: t("wallpaper.videos") }, { value: "scene", label: t("wallpaper.scenes") },
+        { value: "web", label: t("wallpaper.web") }, { value: "unsupported", label: t("wallpaper.otherFormats") },
       ]} />
-      <Select aria-label={zh ? "壁纸排序" : "Wallpaper sorting"} value={p.librarySort} onChange={value => update({ librarySort: value as WallpaperSort })} options={[
-        { value: "added-desc", label: zh ? "添加时间：新到旧" : "Added: newest first" }, { value: "added-asc", label: zh ? "添加时间：旧到新" : "Added: oldest first" },
-        { value: "modified-desc", label: zh ? "修改时间：新到旧" : "Modified: newest first" }, { value: "modified-asc", label: zh ? "修改时间：旧到新" : "Modified: oldest first" },
-        { value: "name-asc", label: zh ? "名称：升序" : "Name: ascending" }, { value: "name-desc", label: zh ? "名称：降序" : "Name: descending" },
+      <Select aria-label={t("wallpaper.wallpaperSorting")} value={p.librarySort} onChange={value => update({ librarySort: value as WallpaperSort })} options={[
+        { value: "added-desc", label: t("wallpaper.addedNewestFirst") }, { value: "added-asc", label: t("wallpaper.addedOldestFirst") },
+        { value: "modified-desc", label: t("wallpaper.modifiedNewestFirst") }, { value: "modified-asc", label: t("wallpaper.modifiedOldestFirst") },
+        { value: "name-asc", label: t("wallpaper.nameAscending") }, { value: "name-desc", label: t("wallpaper.nameDescending") },
       ]} />
     </div>
     <div className="wallpaper-grid">
@@ -158,14 +186,14 @@ export function WallpapersConfig() {
             </div>
             <div className="wallpaper-item-label"><span title={w.title}>{w.title}</span><small>{kindName(w)}</small></div>
           </button>
-          {w.source === "imported" && <button type="button" className="wallpaper-delete" disabled={busy} title={zh ? "删除导入壁纸" : "Delete imported wallpaper"} aria-label={`${zh ? "删除" : "Delete"} ${w.title}`} onClick={() => {
-            if (!window.confirm(zh ? `删除导入的壁纸“${w.title}”？` : `Delete imported wallpaper "${w.title}"?`)) return;
+          {w.source === "imported" && <button type="button" className="wallpaper-delete" disabled={busy} title={t("wallpaper.deleteImportedWallpaper")} aria-label={`${t("wallpaper.delete")} ${w.title}`} onClick={() => {
+            if (!window.confirm(t("wallpaper.deleteConfirm", { title: w.title }))) return;
             void action(async () => { await mutate("DELETE", { id: w.id }); if (p.id === w.id) update({ id: null }); });
           }}><Trash2 size={14} /></button>}
         </article>;
       })}
     </div>
-    {!visible.length && <p className="wallpaper-empty">{busy ? (zh ? "正在读取…" : "Loading…") : (zh ? "没有匹配的壁纸" : "No matching wallpapers")}</p>}
-    <details className="wallpaper-folders"><summary>{zh ? "已扫描目录" : "Scanned folders"} ({library.roots.length})</summary>{library.roots.map(r => <div key={r}>{r}</div>)}{library.warnings.map((w, i) => <div key={i} className="wallpaper-warning">{w}</div>)}</details>
+    {!visible.length && <p className="wallpaper-empty">{busy ? t("wallpaper.loading") : t("wallpaper.noMatchingWallpapers")}</p>}
+    <details className="wallpaper-folders"><summary>{t("wallpaper.scannedFolders")} ({library.roots.length})</summary>{library.roots.map(r => <div key={r}>{r}</div>)}{library.warnings.map((w, i) => <div key={i} className="wallpaper-warning">{w}</div>)}</details>
   </section>;
 }

@@ -4,6 +4,7 @@ import { memo, useEffect, useLayoutEffect, useState, useCallback, useRef, useMem
 import type { ExitedRpcSession, ManagedProject, ProjectLaunchConfig, SessionInfo } from "@/lib/types";
 import type { AttentionItem } from "@/lib/attention";
 import { useI18n } from "@/lib/i18n";
+import { useHomeDir } from "@/lib/home-dir";
 import { formatApiError } from "@/lib/i18n/api-error";
 import { DirectoryPicker } from "./DirectoryPicker";
 import { ProjectLaunchConfigDialog } from "./ProjectLaunchConfigDialog";
@@ -13,8 +14,10 @@ import { toast } from "./ui/toast";
 import { clearLastOpenSession, setLastOpenSession, workspaceKeyOf } from "@/lib/workspace-memory";
 import { groupSessionsByProject, moveManagedProject, projectActivityCounts, shiftManagedProject, sortManagedProjects, type ProjectDropTarget } from "@/lib/project-ordering";
 import { comparableProjectPath } from "@/lib/comparable-path";
-import { Archive, CalendarClock, Check, ChevronRight, FileUp, Plus, RefreshCw, Search, Settings2 } from "lucide-react";
+import { Archive, CalendarClock, Check, ChevronRight, FileUp, Plus, Puzzle, RefreshCw, Search, Settings2 } from "lucide-react";
 import { openScheduledTasks } from "@/lib/scheduled-tasks-ui";
+import { PluginsPanel } from "./PluginsPanel";
+import type { WebPluginInfo } from "@/lib/web-plugin-types";
 import {
   countActiveSessionFilters,
   DEFAULT_SESSION_FILTERS,
@@ -27,6 +30,7 @@ import {
 } from "@/lib/session-filters";
 import { SessionFilterChips, SessionFilterMenu, type SessionFilterCounts } from "./SessionSidebar-filters";
 import { publishSessionsChanged } from "@/lib/session-change-bus";
+import { subscribeAppEvents } from "@/lib/app-events";
 import {
   EMPTY_PROJECT_SET,
   INITIAL_RESTORE_MAX_ATTEMPTS,
@@ -68,6 +72,8 @@ interface Props {
   onOpenWorkspace?: (cwd: string) => void;
   /** Pending "needs you" dialogs from the running-sessions stream. */
   onAttentionChange?: (items: AttentionItem[]) => void;
+  /** Number of sessions mid-run, from the same stream (update dialog warning). */
+  onRunningCountChange?: (count: number) => void;
   /** Rendered first among the header utilities (the attention bell). */
   headerAccessory?: ReactNode;
   initialSessionId?: string | null;
@@ -90,22 +96,37 @@ interface Props {
   onOpenArchive?: () => void;
   /** True when settings full-page view is currently open. */
   settingsOpen?: boolean;
+  /** Plugin whose page is open in the main area (highlighted in the plugin list). */
+  activePluginId?: string | null;
+  onOpenPlugin: (plugin: WebPluginInfo) => void;
+  onClosePlugin: (id: string) => void;
 }
 
+const SIDEBAR_PLUGINS_MODE_KEY = "omp-web:sidebar-plugins";
 
 
 
 
-
-export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, onOpenWorkspace, onAttentionChange, headerAccessory, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onWorkspaceOptionsChange, addProjectOpen, setAddProjectOpen, usageVisible = true, onOpenSettings, onOpenArchive, updateAvailable, settingsOpen = false }: Props) {
+export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, optimisticSession, onSelectSession, onNewSession, onOpenWorkspace, onAttentionChange, onRunningCountChange, headerAccessory, initialSessionId, skipInitialProjectSelection, onInitialRestoreDone, refreshKey, onSessionDeleted, selectedCwd: selectedCwdProp, onCwdChange, onWorkspaceOptionsChange, addProjectOpen, setAddProjectOpen, usageVisible = true, onOpenSettings, onOpenArchive, updateAvailable, settingsOpen = false, activePluginId = null, onOpenPlugin, onClosePlugin }: Props) {
 
 
   const { t } = useI18n();
+  // Plugin mode swaps the workspace list for the web plugins (kept across reloads).
+  const [pluginsMode, setPluginsMode] = useState(false);
+  useEffect(() => {
+    try { setPluginsMode(window.localStorage.getItem(SIDEBAR_PLUGINS_MODE_KEY) === "1"); } catch { /* storage unavailable */ }
+  }, []);
+  const togglePluginsMode = useCallback(() => {
+    setPluginsMode((current) => {
+      try { window.localStorage.setItem(SIDEBAR_PLUGINS_MODE_KEY, current ? "0" : "1"); } catch { /* storage unavailable */ }
+      return !current;
+    });
+  }, []);
   const [allSessions, setAllSessions] = useState<SessionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedCwd, setSelectedCwd] = useState<string | null>(null);
-  const [homeDir, setHomeDir] = useState<string>("");
+  const homeDir = useHomeDir() ?? "";
   // Managed + session-discovered projects (server-merged, hidden excluded).
   const [projects, setProjects] = useState<ManagedProject[]>([]);
   const [draggedProjectPath, setDraggedProjectPath] = useState<string | null>(null);
@@ -139,6 +160,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
   const wtNewInputRef = useRef<HTMLInputElement>(null);
   const [sessionRefreshDone, setSessionRefreshDone] = useState(false);
   const [runningSessionIds, setRunningSessionIds] = useState<Set<string>>(() => new Set());
+  const [subagentCounts, setSubagentCounts] = useState<ReadonlyMap<string, number>>(() => new Map());
   const [runningSessionCwds, setRunningSessionCwds] = useState<Record<string, string>>({});
   const [exitedSessions, setExitedSessions] = useState<Map<string, ExitedRpcSession>>(() => new Map());
   const knownRunningCwdsRef = useRef<Map<string, string>>(new Map());
@@ -163,7 +185,14 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
   // Set once the first /api/sessions fetch settles (success OR failure) so the
   // initial-restore effect can stop waiting on a load that never yields rows.
   const initialLoadedRef = useRef(false);
+  // True while a load that shows the skeleton is pending. A newer load aborts
+  // the older one and inherits this: otherwise the aborted first load would
+  // drop the skeleton and the sidebar would show every project as empty until
+  // the replacement answers (it can sit queued behind the browser's per-host
+  // connection limit).
+  const loadingOwnerRef = useRef(false);
   const loadSessions = useCallback(async (showLoading = false) => {
+    const ownsLoading = showLoading || loadingOwnerRef.current;
     sessionsAbortRef.current?.abort();
     const controller = new AbortController();
     sessionsAbortRef.current = controller;
@@ -174,16 +203,22 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
     // visibility/online recovery below can retry later.
     const timeout = setTimeout(() => controller.abort(new DOMException("Session list request timed out", "TimeoutError")), SESSIONS_FETCH_TIMEOUT_MS);
     try {
-      if (showLoading) setLoading(true);
+      if (ownsLoading) {
+        loadingOwnerRef.current = true;
+        setLoading(true);
+      }
       const headers: Record<string, string> = {};
       if (sessionsEtagRef.current) headers["If-None-Match"] = sessionsEtagRef.current;
       const res = await fetch("/api/sessions", { headers, signal: controller.signal });
       if (res.status === 304) return;
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const etag = res.headers.get("ETag");
-      if (etag) sessionsEtagRef.current = etag;
       const data = await res.json() as { sessions: SessionInfo[]; runningSessionIds?: string[]; runningSessions?: Array<{ id: string; cwd: string }> };
       setAllSessions(data.sessions);
+      // Only now does the list match this ETag. Storing it before the body is
+      // read lets a superseded (aborted) load leave the list empty while every
+      // later request gets a 304 for it.
+      if (etag) sessionsEtagRef.current = etag;
       if (data.runningSessions) {
         for (const rs of data.runningSessions) {
           if (rs.id && rs.cwd) knownRunningCwdsRef.current.set(rs.id, rs.cwd);
@@ -209,7 +244,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
         return next.size === prev.size ? prev : next;
       });
       setError(null);
-      if (!showLoading) {
+      if (!ownsLoading) {
         setSessionRefreshDone(true);
         if (sessionRefreshTimerRef.current) clearTimeout(sessionRefreshTimerRef.current);
         sessionRefreshTimerRef.current = setTimeout(() => setSessionRefreshDone(false), 2000);
@@ -219,8 +254,14 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
       setError(t("sessionSidebar.loadFailed", { detail: e instanceof Error ? e.message : String(e) }));
     } finally {
       clearTimeout(timeout);
-      initialLoadedRef.current = true;
-      if (showLoading) setLoading(false);
+      // A superseded load leaves loading/initial state to its replacement.
+      if (sessionsAbortRef.current === controller) {
+        initialLoadedRef.current = true;
+        if (ownsLoading) {
+          loadingOwnerRef.current = false;
+          setLoading(false);
+        }
+      }
     }
   }, [t]);
 
@@ -287,20 +328,22 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
   }, []);
 
   const onAttentionChangeRef = useRef(onAttentionChange);
+  const onRunningCountChangeRef = useRef(onRunningCountChange);
   useLayoutEffect(() => {
     onAttentionChangeRef.current = onAttentionChange;
-  }, [onAttentionChange]);
+    onRunningCountChangeRef.current = onRunningCountChange;
+  }, [onAttentionChange, onRunningCountChange]);
   useEffect(() => {
-    // Live running status and session-list invalidations arrive via SSE; the
-    // sidebar never has to poll while an agent is working.
-    const source = new EventSource("/api/agent/running/events");
-
-    source.onmessage = (e) => {
-      try {
-        const data = JSON.parse(e.data) as {
+    // Live running status and session-list invalidations arrive on the
+    // page-wide /api/events stream; the sidebar never has to poll while an
+    // agent is working.
+    const unsubscribe = subscribeAppEvents({
+      onFrame: (frame) => {
+        const data = frame as {
           type?: string;
           runningSessionIds?: string[];
           runningSessions?: Array<{ id: string; cwd: string }>;
+          subagentSessions?: Array<{ id: string; count: number }>;
           exitedSessions?: ExitedRpcSession[];
           attention?: AttentionItem[];
           refreshSessionList?: boolean;
@@ -310,6 +353,8 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
           sseAuthoritativeRef.current = true;
           onAttentionChangeRef.current?.(data.attention ?? []);
           setRunningSessionIds(new Set(data.runningSessionIds ?? []));
+          setSubagentCounts(new Map((data.subagentSessions ?? []).map((entry) => [entry.id, entry.count])));
+          onRunningCountChangeRef.current?.(data.runningSessionIds?.length ?? 0);
           setExitedSessions(new Map((data.exitedSessions ?? []).map((session) => [session.id, session])));
           if (data.runningSessions) {
             const nextCwds: Record<string, string> = {};
@@ -326,20 +371,16 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
           if (data.refreshSessionList) scheduleRefresh();
           publishSessionsChanged(data.sessionIds ?? []);
         }
-      } catch {
-        // ignore malformed frames
-      }
-    };
-
-    source.onerror = () => {
+      },
       // EventSource auto-reconnects; until a fresh frame arrives, let the
       // polled /api/sessions fallback own running state again.
-      sseAuthoritativeRef.current = false;
-    };
-    // On error EventSource auto-reconnects; keep the last known state meanwhile.
+      onError: () => {
+        sseAuthoritativeRef.current = false;
+      },
+    });
     return () => {
       if (pendingRefreshRef.current) clearTimeout(pendingRefreshRef.current);
-      source.close();
+      unsubscribe();
     };
   }, [loadSessions, scheduleRefresh]);
   // Long-idle recovery: while the tab is hidden the SSE connection can die
@@ -393,13 +434,6 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
       return next;
     });
   }, [selectedSessionId]);
-
-
-  useEffect(() => {
-    fetch("/api/home").then((r) => r.json()).then((d: { home?: string }) => {
-      if (d.home) setHomeDir(d.home);
-    }).catch(() => {});
-  }, []);
 
   const restoredRef = useRef(false);
   /** Set once the first /api/projects fetch succeeds; guards the expansion
@@ -1278,6 +1312,7 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
         hiddenCount={filtersActive ? 0 : Math.max(0, tree.length - MAX_PROJECT_SESSIONS)}
         selectedSessionId={selectedSessionId}
         runningSessionIds={runningSessionIds}
+        subagentCounts={subagentCounts}
         unreadSessionIds={unreadSessionIds}
         exitedSessions={exitedSessions}
         relativeTimeNow={relativeTimeNow}
@@ -1444,7 +1479,8 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
         </button>
       </div>
 
-      {/* Workspaces section header: label + search / filter / add */}
+      {/* Workspaces section header: label + search / filter / add (hidden, not unmounted, in plugin mode) */}
+      <div style={{ display: pluginsMode ? "none" : "contents" }}>
       <div className="wallpaper-surface" style={{ flexShrink: 0, padding: "4px 10px 2px", display: "flex", alignItems: "center", gap: 2 }}>
         <span
           style={{
@@ -1587,11 +1623,43 @@ export const SessionSidebar = memo(function SessionSidebar({ selectedSessionId, 
             />
           )}
         </div>
+      </div>
+      <PluginsPanel visible={pluginsMode} activePluginId={activePluginId} onOpenPlugin={onOpenPlugin} onClosePlugin={onClosePlugin} />
 
       {/* Provider usage bar — pinned above Settings */}
       {usageVisible && <ProviderUsageBar />}
       {/* Pinned footer: Settings */}
       <div style={{ borderTop: "1px solid var(--border)", flexShrink: 0 }}>
+        <button
+          className="sidebar-settings-row"
+          data-active={pluginsMode}
+          aria-pressed={pluginsMode}
+          onClick={togglePluginsMode}
+          title={pluginsMode ? t("plugins.backToSessions") : t("plugins.title")}
+          style={{
+            width: "100%",
+            height: 36,
+            boxSizing: "border-box",
+            display: "flex",
+            alignItems: "center",
+            gap: 9,
+            padding: "0 12px",
+            background: pluginsMode ? "var(--bg-selected)" : "none",
+            border: "none",
+            color: pluginsMode ? "var(--text)" : "var(--text-muted)",
+            cursor: "pointer",
+            textAlign: "left",
+            transition: SIDEBAR_BUTTON_TRANSITION,
+          }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = pluginsMode ? "var(--bg-selected)" : "var(--bg-hover)"; e.currentTarget.style.color = "var(--text)"; }}
+          onMouseLeave={(e) => { e.currentTarget.style.background = pluginsMode ? "var(--bg-selected)" : "none"; e.currentTarget.style.color = pluginsMode ? "var(--text)" : "var(--text-muted)"; }}
+        >
+          <Puzzle size={14} strokeWidth={2} aria-hidden="true" style={{ flexShrink: 0, color: "var(--accent)" }} />
+          <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: 500 }}>
+            {pluginsMode ? t("plugins.backToSessions") : t("plugins.title")}
+          </span>
+          <ChevronRight size={13} strokeWidth={2} style={{ flexShrink: 0, color: "var(--text-dim)" }} aria-hidden="true" />
+        </button>
         <button
           className="sidebar-settings-row"
           data-active={settingsOpen}

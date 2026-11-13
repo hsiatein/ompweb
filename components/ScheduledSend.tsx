@@ -3,8 +3,10 @@
 import { useEffect, useRef, useState } from "react";
 import { AlarmClock, Clock, Send, X } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
+import { InfoHint } from "./ui/primitives";
 import type { ScheduledMessage } from "@/lib/scheduled-messages";
 import type { ProviderUsageSnapshot } from "@/lib/provider-usage-types";
+import { usageSourceName } from "./AppShell-provider-usage";
 
 const PRESET_MINUTES = [30, 60, 120, 300] as const;
 // Fire a little after the reported reset so the new window is already open.
@@ -48,7 +50,7 @@ async function loadResetOptions(model: { provider: string; modelId: string }): P
     const at = base + minutes * 60_000 + RESET_MARGIN_MS;
     if (at <= Date.now() || options.some((option) => option.at === at)) continue;
     const account = report.accountAlias ?? report.accountLabel;
-    options.push({ at, label: [report.provider, account, report.pool].filter(Boolean).join(" · ") });
+    options.push({ at, label: [usageSourceName(report), account].filter(Boolean).join(" · ") });
   }
   return options.sort((a, b) => a.at - b.at);
 }
@@ -83,7 +85,9 @@ export function ScheduleSendButton({ disabled, disabledReason, model, onSchedule
       loadResetOptions(model).then((options) => { if (!cancelled) setResets(options); }).catch(() => {});
     }
     const onPointer = (event: MouseEvent) => {
-      if (!wrapRef.current?.contains(event.target as Node)) setOpen(false);
+      // The "?" popup is portaled outside the panel; clicking it must not close the panel.
+      const target = event.target as Element;
+      if (!wrapRef.current?.contains(target) && !target.closest?.(".info-hint-popup")) setOpen(false);
     };
     const onKey = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -127,7 +131,11 @@ export function ScheduleSendButton({ disabled, disabledReason, model, onSchedule
       </button>
       {open && (
         <div role="dialog" aria-label={t("scheduledSend.title")} className="picker-panel schedule-send-panel">
-          <div className="schedule-send-heading">{t("scheduledSend.title")}</div>
+          <div className="schedule-send-heading">
+            {t("scheduledSend.title")}
+            <span className="hint-chip">{t("scheduledSend.serverBadge")}</span>
+            <InfoHint label={t("scheduledSend.serverBadge")}>{t("scheduledSend.note")}</InfoHint>
+          </div>
           {resets.length > 0 && (
             <div className="schedule-send-group">
               {resets.map((reset) => (
@@ -158,7 +166,6 @@ export function ScheduleSendButton({ disabled, disabledReason, model, onSchedule
             />
             <button type="submit" disabled={busy || !customValid}>{t("scheduledSend.schedule")}</button>
           </form>
-          <p className="schedule-send-note">{t("scheduledSend.note")}</p>
         </div>
       )}
     </div>

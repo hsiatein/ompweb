@@ -1,186 +1,60 @@
 # ompweb
 
-[![npm version](https://img.shields.io/npm/v/@kahme247/ompweb.svg?logo=npm&color=e05d44)](https://www.npmjs.com/package/@kahme247/ompweb)
-[![node version](https://img.shields.io/node/v/@kahme247/ompweb.svg?logo=node.js&color=44cc11)](https://nodejs.org)
-[![license](https://img.shields.io/github/license/kahme247/ompweb.svg?color=44cc11)](./LICENSE)
-[![npm downloads](https://img.shields.io/npm/dm/@kahme247/ompweb.svg?color=44cc11)](https://www.npmjs.com/package/@kahme247/ompweb)
-[![GitHub stars](https://img.shields.io/github/stars/kahme247/ompweb.svg?logo=github)](https://github.com/kahme247/ompweb/stargazers)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](https://github.com/kahme247/ompweb/pulls)
-
 [English](./README.md) | [简体中文](./README.zh-CN.md) | [日本語](./README.ja.md)
 
-社区：[加入 OMPWEB Discord](https://discord.gg/evqgGzRfM5)
+[oh-my-pi (omp)](https://github.com/can1357/oh-my-pi) 编程智能体的浏览器工作台：
+与运行中的会话对话、按项目浏览历史会话、编辑文件、使用终端、管理 omp 设置。
 
-[oh-my-pi (omp)](https://github.com/can1357/oh-my-pi) 编程智能体的现代 Web UI。它读取本地的 omp 会话，在浏览器中提供实时对话、项目会话浏览、配置管理和文件预览等功能。
+本仓库（[hsiatein/ompweb](https://github.com/hsiatein/ompweb)）是
+[kahme247/ompweb](https://github.com/kahme247/ompweb) 的分支，已同步至
+[`e822c7f`](https://github.com/kahme247/ompweb/commit/e822c7f)。未发布到 npm，请从源码安装。
+部分功能需要配套的 omp 分支 [hsiatein/oh-my-pi](https://github.com/hsiatein/oh-my-pi)。
 
-## 本分支增强
+![毛玻璃对话与壁纸取色](docs/showcase/workspace.png)
 
-[hsiatein/ompweb](https://github.com/hsiatein/ompweb) 基于
-[kahme247/ompweb](https://github.com/kahme247/ompweb)。以下以已合并的上游
-[`e822c7f`](https://github.com/kahme247/ompweb/commit/e822c7f) 为基线，
-整理本分支当前源码的新增功能和行为改动，相关修复合并为 **6 类、53 项**。
-数量按功能分组统计；原版已有功能另列，并注明上游来源。
+## 本分支新增
 
-上方 npm 徽章属于**上游包**，不是本分支的独立发行版。
-要使用以下改动，请按本文的源码方式安装。
+**文件与工具**
+- 编辑并保存文本文件（UTF-8，≤ 256 KiB），带冲突检测；资源管理器中新建、重命名、删除。
+- 内置 PTY 终端（需要可选依赖 `node-pty` 编译成功）。
+- 会话、文件、消息、代码块的右键菜单。
+- 回复中的本地路径、`file://`、`artifact://` 链接可在侧栏打开。
+- 服务端[备忘录](docs/memos.md)。
 
-### 文件、终端与备忘录
+**对话与自动化**
+- 定时发送；定时任务（一次 / 间隔 / 每天 / 每周 / webhook），投递到已有会话或每次新建会话。
+- `scheduled_tasks` 智能体工具：智能体可给自己定时唤醒，或为长任务申请一次性 webhook URL。
+- “需要你”提醒铃：汇总所有会话中待回答的问题和 sudo 请求。
+- 智能体命令的 sudo 密码在浏览器弹窗中输入（Linux）。
+- 编辑已发送消息会在其之前分叉；steer / follow-up 提升可正常工作。
 
-| 新增 / 改动 | 具体内容与边界 |
-| --- | --- |
-| 文本编辑 | 在右侧编辑并显式保存授权工作区内、不超过 256 KiB 的普通 UTF-8 文件。切换文件或设置页保留草稿，标记未保存标签并在关闭/离开时警告；原子保存保留普通权限及 LF/CRLF 换行，版本校验阻止覆盖外部修改。草稿仅在内存中，不自动落盘。 |
-| 资源管理器文件操作 | 从根目录按钮或文件行菜单新建文件/文件夹、重命名和删除，手机也可操作。重命名同步更新已打开标签；删除文件夹为确认后的永久递归删除。未保存编辑会阻止相关重命名/删除；工作区根目录、符号链接、特殊文件及仅凭聊天引用可读的外部文件受写入保护。 |
-| 回复与过程记录中的文件、图片 | 按来源会话解析本地路径、`file://`、Markdown 上级相对路径和持久化 `artifact://` 引用。过程记录按会话工作目录解析相对工具路径，去除末尾读取选择器，保留 Windows 盘符及文件名特殊字符；内部工具 URI 显示为普通文本。修复 `xd://open_file` 路径、结果关联及跨会话文件上下文。图片加载失败显示权限/大小原因；外部引用按会话精确授权单个文件，保留目录与编辑权限边界。 |
-| 智能体打开文件审批 | **设置 → 界面与行为 → 允许后台会话直接打开侧边文件**，位于「自动在浏览器打开网页链接」下方，允许后台会话直接在侧边打开已授权文件，必要时离开设置页。默认关闭、仅保存于当前浏览器；不改变文件访问、编辑权限或链接审批。 |
-| 内置终端 | 右侧运行真正的 PTY shell，支持多标签、颜色、全屏程序、调整大小和输出回放。浏览器标签页共享终端，刷新页面不结束 shell；关闭终端或停止服务会结束它。依赖可选的 `node-pty`，安装时需要原生编译工具链。 |
-| 应用右键菜单 | 为工作区、会话、资源管理器、文件标签、消息和代码块提供对应操作；选中文字可复制或引用到输入框。支持在终端打开目录、下载文件及复制路径。Shift+右键、触摸长按、文本框、媒体、网页链接和终端屏幕保留浏览器原生菜单。 |
-| 备忘录 | 服务端保存，支持自动保存、搜索、置顶、Markdown 预览/导出、草稿恢复和版本冲突处理，默认按 `Insert` 开关。授权客户端共享，但不会自动发送给模型。详见[备忘录说明](docs/memos.md)。 |
+**账号与模型**
+- 严格的 provider/账号路由：全局禁用 + 单个对话固定。
+- 账号昵称、按账号设置 HTTP(S) 代理。
+- 独立额度池、Codex/Claude 已存重置次数、生成速度历史。
+- 分层自定义指令（全局 → provider → 模型）。
+- 可配置的子智能体策略（默认关闭）。
 
-### 对话、自动化与授权
+**界面**
+- 可自定义快捷键；Esc 不再停止智能体。
+- Alt 按住说话听写、会话筛选、置顶工作区、目录收藏。
+- 设置重新分组：界面与行为、外观、模型与 Provider、智能体与策略、扩展与技能。
+- 图片/视频/网页壁纸及部分 Wallpaper Engine 场景渲染（[限制](docs/local-wallpapers.md)）、毛玻璃界面、壁纸取色、[桌宠](docs/PETS.md)。
 
-| 新增 / 改动 | 具体内容与边界 |
-| --- | --- |
-| 稍后发送 | 向已有会话预约发送文本，可选预设时长、日期时间或当前模型报告的 5 小时额度重置后一分钟。服务端保存，关闭页面或重启后仍有效，逾期启动即发送；支持立即发送、取消和手动重试，最多提前 30 天。 |
-| 定时任务 | 一次性、间隔、每日、每周提示词，可发给已有会话或每次新建会话。支持暂停、编辑、删除、立即执行、历史记录，以及新会话的模型/思考/advisor、保留数量与运行超时；默认保留最近 10 次新会话，超时 60 分钟。 |
-| Webhook 触发 | 为任务生成 `POST /api/hooks/<token>`，支持换新 URL，以及将最多 16,000 字符的请求正文作为外部数据追加。**URL 本身就是凭据**，不受网页登录密码保护，必须当作密码保管。 |
-| Agent 自行安排唤醒 | 服务端 `scheduled_tasks` 工具允许 agent 创建、列出和取消自己的定时任务，或获取一次性唤醒 URL，供 tmux 等独立运行的任务结束时回调。每会话最多 10 个 agent 任务；未使用 URL 默认 7 天过期，最多 30 天；一次性任务投递后删除。 |
-| 复用原生排队 | 定时、Webhook、手动触发在空闲时发送 `prompt`，忙碌时进入 OMP 原生 `follow_up` 队列，不因会话忙或前一次投递尚未结束而跳过。新会话任务独立启动，不另造一套持久化调度队列。 |
-| “需要你”通知中心 | 侧边栏铃铛汇总各会话的问答、确认、输入、链接和 sudo 请求，点击直达等待中的会话；标签页标题显示数量，侧边栏关闭时显示提示点，已有通知权限时可向后台页面发送系统通知。输入区上方的问题卡片支持点击整条标题栏或按 Enter/空格反复展开、收起；折叠后仅保留标题，释放聊天记录空间，保留已选项与文字草稿，新请求自动展开。 |
-| 网页 sudo 授权 | Linux agent 命令通过网页 askpass 弹窗输入密码，并展示核实后的 sudo 命令行。密码不交给模型、不保存、不记录日志；无在线页面立即拒绝，4 分钟超时。启动提示词加入**软约束**，禁止沿用旧上下文里的桌面 askpass 或其他密码渠道；不是操作系统沙箱。 |
-| 消息编辑与引导修复 | 编辑已发送用户消息时从该消息之前分叉并恢复文本草稿，原会话保持不变，不再只是切换显示分支。手机发送按钮遵循引导/排队设置；队列中的“引导”真正调用 OMP 移出后重新 steer，要求 OMP 18.4+，不携带原队列附件。 |
-| 后台结果折叠 | `async-result` 默认显示简短预览；点击整条通知标题栏即可反复展开、收起，标题获得焦点时支持 Enter 和空格键，箭头指示状态。展开保留完整输出的换行与缩进，复制始终保留完整输出；其他自定义通知默认展开。 |
+**运维**
+- 系统面板（按会话显示内存/CPU）和内存守护：可用内存过低时终止最大的智能体/终端命令。
+- 分阶段 Linux 部署脚本（`scripts/deploy-linux-service.sh`）。
+- 禁用界面内的 omp 更新；omp 从源码维护。
 
-**独立长任务的用法：**先取得唤醒 URL，将训练等任务放到 tmux 等独立进程中，
-结束后 POST 结果，由原会话继续处理。浏览器页面和空闲会话的 OMP 子进程不必一直开着，
-但**回调到达时，ompweb 服务必须正在运行且能够连接**，Webhook 不能启动已关闭的服务器。
-生成的地址指向配置的本机服务；跨机器任务需要另外配置可达且安全的访问地址。
-
-定时规则采用**服务器时区**；停机期间错过的定时执行在启动后合并补发一次，不补无限积压。
-运行记录的 `started` 只表示投递已接受，不表示排队任务已经完成。
-运行超时监视器只在内存中，重启后不恢复。一个 agent 数据目录只运行一个 ompweb 调度实例，
-否则可能重复投递。
-
-### 账号、额度与模型统计
-
-| 新增 / 改动 | 具体内容与边界 |
-| --- | --- |
-| 每会话选账号与账号轮换 | 通过 OMP 的 `auth.accountPolicies` 为聊天优先选择账号，或临时停用账号；Auto 显示上次使用的账号。这些是优先策略，不是硬锁，额度耗尽或受阻时仍可回退。策略在子进程启动/重启时应用，包括下次空闲发送前；不影响独立终端 OMP。 |
-| 账号昵称 | 在侧边栏为供应商账号命名，同一账号各额度池和不同浏览器同步使用昵称，详情仍显示原始标识。 |
-| 独立额度池与 Hyper 余额 | 不再把相同时间窗口的不同额度池混为一条，例如 Antigravity 的不同模型组；展示 Charm Hyper 剩余点数，总量未知时明确标注 **250 点参考估算**，不冒充订阅上限。 |
-| 用量刷新 | 服务端缓存和客户端刷新从五分钟缩短为一分钟；隐藏/离线时暂停，到期返回时补刷，避免请求重叠，临时失败保留上次快照。 |
-| 已保存的额度重置 | 展示 Codex/Claude 重置次数、到期时间和可用条件；确认后通过 `omp usage reset` 消耗一次，并清除旧用量缓存。并发消耗保护和供应商限制仍由 OMP 负责。 |
-| 生成速度历史 | 点击带速度分级色的读数查看最近 20/50/100 次请求的图表、平均/整体速率、中位数、P10/P90、极值、标准差、首 token 延迟、后续生成速率和 token 总量。顶栏最近 32 次均速在刷新后也按 OMP 的真实 output/duration 重建，不再猜消息时间差。 |
-| Fast 模式适配 | 优先遵循模型声明的服务等级，为支持的 ChatGPT/Codex 订阅 GPT 模型和 Google Vertex 显示 Fast，不再只识别原有几个供应商。 |
-| 首次模型与登录配置 | OMP 因 `No models available.` 退出时，工具/登录 RPC 可借内置目录模型完成引导，不创建凭据、不发送模型请求，不覆盖聊天模型选择或掩盖其他启动错误。详见[首次配置行为](docs/CUSTOMIZATIONS.md#first-run-provider-setup)。 |
-
-### 导航、输入与设置
-
-| 新增 / 改动 | 具体内容与边界 |
-| --- | --- |
-| 分层自定义指令 | 设置 → 智能体与策略 → 指令中管理全局、提供商及“提供商 + 模型”的多套提示词，按**模型 > 提供商 > 全局**选用最具体的一套。空规则屏蔽继承，删除则恢复；服务端保存，普通或排队消息开始执行时选取，保留原生与项目指令。提供商与模型使用联动下拉菜单，从当前已有目录选择；卡片与控件复用统一玻璃材质，提供生效规则预览。[实现与边界](docs/CUSTOMIZATIONS.md#scoped-custom-instructions)。 |
-| 快捷键管理 | **设置 → 界面与行为 → 快捷键**管理全部 21 项应用快捷操作：搜索、录入、移除、清空、恢复及冲突提示；修改即时生效，按浏览器保存并同步标签页。横向标签按用途拆为**界面布局**（工具折叠、侧栏用量显示）、**交互行为**（选择、自动打开、声音与朗读、发送与补全）、**快捷键**，搜索定位对应子页。**中止任务默认留空**；停止按钮、关闭弹窗、普通编辑和终端程序按键保持原有行为。 |
-| Alt 语音输入 | 单独按下并释放 Alt 即可开始或结束转写到输入框；排除 Alt 组合键、输入法、其他编辑框和打开的弹窗，且可自行改绑。处理录音启动取消、过期转写响应、试听清理和焦点恢复；录音面板及浏览器朗读本身来自上游。 |
-| 工作区置顶与排序 | 独立置顶区、即时拖动排序、跨区拖放置顶/取消置顶、区内上移下移；顺序和置顶状态一次保存，不随会话活跃度跳动。 |
-| 会话筛选 | 按运行中、未读、异常退出及最近 24 小时/7 天活动筛选，提供各项数量、可移除条件标签和重置。属于筛选，**不是聊天正文全文搜索**。 |
-| 目录选择器 | 就地新建目录、保存跨浏览器共享的收藏目录；点击收藏只跳转，不自动确认选择；profile、advisor 和额外启动参数放进可折叠选项区。 |
-| 新对话导航与首次发送 | 点击工作区始终进入该工作区的新对话页，在同工作区已有会话中也有效；自适应顶栏保留新对话/添加工作区入口，宽度测量兼顾界面缩放。已分配但尚未写出转录的新会话通过 RPC 核实空上下文后可建立首次发送边界，不把真正缺失的历史伪装为空会话。 |
-| 设置整合与修复 | **扩展与技能**（`extensions`）统一内置绘图工具、MCP 服务端和 Skills 技能库，搜索可定位对应区域。无工作区时仍能打开分类，项目 MCP 编辑与技能管理需先选择工作区。移除 plugins 旧界面分支、别名和重载回调，不改动已安装插件或后端 API。快速修改同组原生设置不再混入其他字段；提供英、简中、日文案。 |
-| 外观与个性化 | 统一为 `appearance` 分类，沿用提供商页的横向标签：**主题与显示、壁纸与玻璃、桌宠、动效**。主题、聊天字号和界面缩放集中管理，鲸尾动画移出「界面与行为」。设置搜索和壁纸/桌宠快捷入口直接定位对应子页，保留原有浏览器设置及素材库。 |
-| 模型与提供商 | 统一为 `providers` 分类，横向切换已连接账户、自定义提供商、模型注册与路由、默认参数。五项全局默认值（思考等级、详细程度、性格、思考块、外部思考草稿）沿用自动保存；模型注册表沿用原保存按钮，切换子页保留编辑草稿。搜索直接定位默认参数。 |
-| 智能体与策略 | 统一为 `agents` 分类，横向切换独立的**指令、子智能体、运行策略、工具审批**。保留原有 13 项压缩、记忆、自动学习、重试设置及 3 项审批设置，沿用原生配置保存。指令和子智能体分别编辑，切换子页保留各自草稿，搜索定位对应子页。 |
-
-### 壁纸、毛玻璃与动画
-
-| 新增 / 改动 | 具体内容与边界 |
-| --- | --- |
-| 本地图片/视频壁纸 | 原文件播放、流式上传、服务端文件夹和 Steam 库发现；控制播放、静音、音量、亮度、适应方式与拖动裁剪。大文件可就地读取，不修改素材原件。 |
-| 壁纸筛选与排序 | 组合标题搜索、壁纸类型和方向筛选，按名称自然顺序、添加时间、修改时间升序或降序排列。Auto 默认在电脑选择横屏、手机选择竖屏，也可手动选择横屏、竖屏、方形、尺寸未知或全部；选项按浏览器保存。 |
-| 沙箱网页壁纸 | 本地 HTML/CSS/JavaScript 项目及已安装基础项目的预设在隔离 iframe 中运行，使用限定资源 URL、禁止外网访问，适配属性及媒体回调。不执行应用程序壁纸，不模拟原生插件。 |
-| 浏览器原生场景 | Three.js/WebGL 在**客户端 GPU** 上渲染支持的 Wallpaper Engine 场景，不截桌面、不串流画面；覆盖部分特效通道、纹理、粒子/拖尾、视差、文字/字体、父子变换、特定网格/骨骼动画、原声、音频响应及受限 QuickJS SceneScript。属于部分兼容。 |
-| 场景兼容与骨骼弹簧 | 支持 MDLV0019/0023 静态/蒙皮网格，按素材参数模拟阻尼弹簧、拖动释放、冲量与重置。适配两张 Aemeath 场景所用格式；继承视差基准使眼睛保持贴合脸部，保留眼部动画与特效。原生 IK 和逐像素一致的物理效果属于兼容范围之外。 |
-| 场景加载与缓存 | 服务端持久缓存转换资源，浏览器 IndexedDB 缓存图片、字体、已用视频和原声；按需加载、限制并发、原媒体 Range 流式传输、隐藏暂停、释放 GPU 资源。源变化后失效，普通 HTTP 局域网可用；脚本超时处理保留已验证画面并报告兼容限制。 |
-| 自定义背景音乐 | 导入音频或视频第一条音轨替换壁纸原声，复用提取缓存；沿用音量/静音/暂停，场景音频响应使用替换音轨。服务端需 FFmpeg/ffprobe；系统/标签页音频共享需主动授权并受浏览器限制。 |
-| 毛玻璃工作区 | 消息/控件局部玻璃、全透明、整面板磨砂及不透明度控制，覆盖聊天、代码、表格、工具、思考、状态、用量、输入区、文件、终端和系统卡片。全部表单下拉菜单（含新会话工作区和设置）统一控件与展开列表的玻璃材质，保留键盘选择、Esc 收起及定时任务路径自由输入；修复目录/扩展弹窗模糊与语法文字可读性，关闭壁纸恢复原有底色。 |
-| 壁纸生成配色 | Material Color Utilities 在浏览器 Worker 中采样可见裁剪区域，协调强调色、选中项、边框和进度条；普通文字统一采用固定色、自动黑白或 Material 色，保留语义颜色。像素不上传，任意动态背景上不能保证处处可读。 |
-| 动画桌宠 | 发现/导入 Codex v1/v2 精灵图，支持预览、大小/位置调整、跟随指针与当前会话状态联动；隐藏页面和减少动态效果时停止动画，不额外调用模型，不附带美术素材。详见[桌宠说明](docs/PETS.md)。 |
-| 鲸尾状态动画 | 运行和思考状态改为可配置的鲸尾，提供五种运动选项及动态预览；减少动态效果偏好和 Safari 使用静态鲸尾。 |
-
-### 运行策略、部署与安全
-
-| 新增 / 改动 | 具体内容与边界 |
-| --- | --- |
-| 强制单代理策略 | 每次 OMP 进程启动都校验并追加配置，禁止内置 task/批量/eval/workpool 子代理，保留主代理普通工具及历史子代理查看。属于 OMP 工具策略，**不是阻止任意子进程或外部 API 的操作系统沙箱**。详见[策略说明](docs/CUSTOMIZATIONS.md#single-agent-policy)。 |
-| 默认启用图片生成 | Web 会话默认打开 OMP 的 `generate_image`，用户/项目显式配置优先；设置开关写入原生配置，对之后启动/重启的会话生效，仍需支持图片生成的供应商和账号。 |
-| 系统监控与内存保护 | Linux 内存/交换区/CPU/负载、各会话与终端进程用量、停止操作和处理历史；默认可用内存低于 15% 警告、6% 处置，可调整。保护器终止较大的 agent/终端后代并通知，不杀服务器或无关进程，也不能保证避免内核 OOM。 |
-| OOM 隔离改进 | 提高 agent 和终端 shell 的内核 OOM 分数；生成的 systemd unit 设置 `OOMPolicy=continue`，避免一个命令被 OOM 杀死就连带停掉整个服务。与 OMP 自身的内存保护是两套机制。 |
-| 更安静、安全的 OMP 更新 | 后台检查只更新设置提示，不在启动或切回页面时打断；禁用 ompweb 自更新不再禁用 OMP 更新。保留失败原因，检查等待 45 秒；更新二进制不打断运行任务，空闲会话下次发送前切换新版本。显式“重启 OMP 会话”仍会中断全部会话。 |
-| Linux 分阶段部署 | [部署脚本](scripts/deploy-linux-service.sh) 在服务运行时构建独立 staging，复用匹配依赖和构建缓存，校验源码指纹，保留运行环境与备份。`switch` 复用匹配 staging，否则先构建，再重启服务；不是零停机部署。 |
-| 私网访问与发布隔离 | CLI 启动器允许无密码的私有局域网/VPN 连接，通过对端地址和 Host 检查代替一概拒绝非回环监听。同机隧道/反代可绕过此边界，可信网络之外必须配置密码和 HTTPS。仓库排除本机凭据、会话、数据库、私有笔记、素材和诊断截图。 |
-
-**兼容性与信任边界：**这不是 Wallpaper Engine 的完整或逐像素替代，仍受不支持的特效、
-格式、脚本 API、客户端 GPU 与浏览器媒体策略限制。可访问网页的授权用户能运行 shell、
-管理共享服务状态，不提供多用户隔离。仓库**不包含** Wallpaper Engine、Steam/Codex 素材、
-凭据或 ASR 权重。网页 sudo 只作用于此服务器启动的 OMP 子进程，不接管任意桌面/终端客户端。
-
-详细说明：[壁纸兼容与缓存限制](docs/local-wallpapers.md)、[桌宠](docs/PETS.md)、
-[备忘录](docs/memos.md)、[部署、策略与隐私](docs/CUSTOMIZATIONS.md)、[变更记录](CHANGELOG.md)。
-
-### 功能展示
-
-以下为本分支的真实浏览器截图，使用**虚构会话、示例账户和原创程序绘制壁纸**，不包含个人数据。
-图中展示的是图片壁纸模式，不代表场景已经完全兼容。
-
-![毛玻璃聊天、壁纸配色与示例用量](docs/showcase/workspace.png)
-
-<details>
-<summary>壁纸配色、文字模式与裁剪设置</summary>
-
-![Material 配色与壁纸裁剪设置](docs/showcase/wallpaper-settings.png)
-
-</details>
-
-<details>
-<summary>手机界面</summary>
-
-<img src="docs/showcase/mobile.png" alt="手机上的毛玻璃聊天与自适应控件" width="360" />
-
-</details>
-
-[截图生成方式与素材来源](docs/showcase/README.md)。
-
-### 最近同步的上游功能
-
-已合并至 [`e822c7f`](https://github.com/kahme247/ompweb/commit/e822c7f)。
-保留的**上游功能**包括可选的重启后恢复会话、批量 ask 问答、跨会话 host tool 与链接确认、
-长用户消息折叠、消息复制/限定范围全选、GitHub 引用链接、语音录制面板及浏览器回复朗读。
-这些不计作本分支原创；本分支在其上做的集成和修复已列在前述清单。
-
-![上游录音面板与本分支毛玻璃输入区](docs/showcase/dictation.png)
-
-语音输入使用已有的 OpenAI 兼容转写接口。本地 Qwen3-ASR 服务只要提供该协议即可接入，
-在服务端配置 `OMP_WEB_STT_ENDPOINT`、`OMP_WEB_STT_MODEL`，需要鉴权时再设置 `OMP_WEB_STT_KEY`。
-ASR 服务需要独立部署；浏览器录音要求 localhost 或 HTTPS，并取得麦克风权限。
-回复朗读使用浏览器/操作系统提供的声音，不经过 ASR 模型，可用声音因设备而异。
-
-<details>
-<summary>上游原始演示和截图（浅色 / 深色主题）</summary>
-
-![ompweb 上游演示](docs/demo.gif)
-
-![ompweb — 浅色主题](docs/screenshot-light.png)
-
-![ompweb — 深色主题](docs/screenshot-dark.png)
-
-</details>
+细节、限制与策略说明：[docs/CUSTOMIZATIONS.md](docs/CUSTOMIZATIONS.md)。
+变更记录：[CHANGELOG.md](CHANGELOG.md)。
 
 ## 环境要求
 
-- 已安装 [omp](https://github.com/can1357/oh-my-pi) 且在 `PATH` 中（或通过 `OMP_WEB_OMP_BIN` 指定路径）
-- Node.js `>= 22.19.0`
+- `omp` 在 `PATH` 中（或设置 `OMP_WEB_OMP_BIN`）
+- Node.js ≥ 22.19.0
 
-## 快速开始
-
-**从源码安装本分支：**
+## 安装
 
 ```bash
 git clone https://github.com/hsiatein/ompweb.git
@@ -190,119 +64,63 @@ npm run build
 node bin/omp-web.js --no-open
 ```
 
-服务器或容器内仍需单独安装 OMP，并将其 agent 数据目录与源码分开持久化。
-私有配置使用环境变量或已忽略的 `.env.local`，不要提交到 Git。
-已有实例运行任务时，请在另一个源码目录构建，不要覆盖正在使用的 `.next`。
+打开 <http://127.0.0.1:30177>。
 
-打开 [http://127.0.0.1:30177](http://127.0.0.1:30177)。源码运行时，
-下方命令中的 `ompweb` 替换为 `node bin/omp-web.js`。
-`npx @kahme247/ompweb` 安装的是上游包，不包含这些分支增强。
-
-### 更新已有 Linux 服务：先构建，再切换
-
-适用于已经配置好的服务：默认 `~/.local/share/ompweb` 下有 `app/`，
-且 `runtime/node-*/bin/node` 只有一个运行时。
+更新已有的 Linux 服务安装（`~/.local/share/ompweb`）：
 
 ```bash
-scripts/deploy-linux-service.sh          # 只准备 staging，不重启服务
-# 等待 agent 任务结束后：
-scripts/deploy-linux-service.sh switch   # 复用匹配的 staging，否则先重新构建
+scripts/deploy-linux-service.sh          # 构建 staging 副本，服务继续运行
+scripts/deploy-linux-service.sh switch   # 切换并重启（会停止运行中的智能体）
 ```
 
-这是更新脚本，不是全新 systemd 安装器。复制范围包含 Git 已跟踪及未忽略文件，
-也包含尚未提交的修改；保留线上 `.env.local` 和服务环境配置。
-预构建后如果源码或线上环境改变，指纹不再匹配，`switch` 仍需构建；
-因此只有内容一致时，预构建才会把后续切换缩短为重启。
-切换会停止受管 agent 和内置终端，默认保留两份备份并输出回滚命令。
-可通过 `OMPWEB_INSTALL_ROOT`、`OMPWEB_SERVICE`、`OMPWEB_KEEP_BACKUPS` 调整。
-不要在运行中的开发 `.next` 上执行部署构建。
-
-<details>
-<summary>改为安装上游版本（不含本分支增强）</summary>
-
-**免安装直接运行：**
+### 命令行
 
 ```bash
-npx @kahme247/ompweb@latest
+node bin/omp-web.js --port 8080
+node bin/omp-web.js --hostname 0.0.0.0
+node bin/omp-web.js --password "secret"
+node bin/omp-web.js --no-open
+node bin/omp-web.js --help
 ```
 
-**或全局安装：**
+未设置密码时，非 loopback 绑定只接受私有局域网/VPN 客户端。同机的隧道或反向代理会绕过这项检查——
+超出可信网络时请设置密码并使用 HTTPS。
 
-```bash
-npm install -g @kahme247/ompweb
-ompweb
-```
-
-在浏览器中打开 [http://127.0.0.1:30177](http://127.0.0.1:30177)。
-
-</details>
-
-### CLI 选项
-
-```bash
-ompweb --port 8080                         # 自定义端口
-ompweb --hostname 0.0.0.0                  # 监听网络地址
-ompweb --password "your-password"          # 启用密码保护
-ompweb --no-open                           # 不自动打开浏览器
-```
-
-## 功能特性
-
-- **实时对话**：与本地 `omp` 智能体进行低延迟流式交互。
-- **队列删除确认**：从队列面板移除后续消息或引导消息前，先预览内容并确认。此操作不会取消 OMP 内部已排队消息的发送。
-- **会话管理**：按项目浏览历史会话，支持会话分叉与分支回溯。
-- **草稿恢复**：未发送的文本按会话或新会话的工作区分别保存；浏览器存储可用时，在同一标签页后退、前进或重新加载后可恢复（最多 50 份草稿）。图片和文件附件仅保留在内存中。
-- **实时任务与历史子智能体**：输入区上方保留实时 todo 与历史子代理摘要/转录查看；本分支强制单代理策略禁止新建内置子代理，完整工具预设也不能绕过。
-- **文件管理、编辑与预览**：与对话并排浏览代码、Markdown、图片、音频及 PDF；支持受限文本编辑、文件/目录增删改名和来源会话附件解析，具体边界见前面的分支清单。
-- **Git Worktree 支持**：直接在侧边栏切换与管理 Git 工作树。
-- **可视化设置**：在 Web 界面直接配置模型、API 密钥及 OMP 原生设置；**扩展与技能**统一管理内置绘图工具、MCP 服务端、技能发现、调用开关、安装与更新。
-- **快捷指令与快捷键管理**：内置常用指令（`/plan`、`/review`、`/fix`、`/test` 等）及命令面板（默认 `⌘K` / `Ctrl+K`）。**设置 → 快捷键** 可搜索、录入、清除或恢复全部 21 项应用快捷操作，并提示重叠绑定；修改立即生效，保存在当前浏览器并同步到其他标签页。**中止任务默认未绑定**，Esc 不再中止任务，仍可点击停止按钮或自行绑定。关闭菜单/弹窗、文本编辑、焦点导航及终端内应用按键保持标准行为。
-- **主题与多语言**：温暖纸感深浅主题，完整支持英语、简体中文及日本語。
+服务安装器（Windows 托盘、macOS launchd、Linux systemd/托盘）来自上游，安装的是上游 npm 包，见
+[上游 README](https://github.com/kahme247/ompweb#readme)。
 
 ## 环境变量
 
 | 变量 | 说明 | 默认值 |
 | --- | --- | --- |
 | `PORT` | 服务端口 | `30177` |
-| `OMP_WEB_HOSTNAME` | 绑定主机名 | `127.0.0.1` |
-| `OMP_WEB_PASSWORD` | 可选的 Web 访问密码 | _无（未启用验证）_ |
-| `OMP_WEB_NO_OPEN` | 设为 `1` 时禁止自动打开浏览器 | `0` |
-| `OMP_WEB_DISABLE_AUTOUPDATE` | 设为 `1` 时禁用 ompweb 自身的更新检查和应用内更新（OMP 运行时的检查和更新不受影响）；修改后需重启 | `0` |
-| `OMP_WEB_OMP_BIN` | `omp` 二进制路径（未在 PATH 时使用） | _自动检测_ |
-| `PI_CODING_AGENT_DIR` | 自定义 omp agent 目录 | `~/.omp/agent` |
-| `OMP_WEB_STT_ENDPOINT` | OpenAI 兼容的语音转文字接口 URL | _无（默认禁用）_ |
-| `OMP_WEB_STT_KEY` | STT 接口对应的 API Key | _无_ |
-| `OMP_WEB_STT_MODEL` | STT 接口的模型名称 | _无_ |
-| `OMP_WEB_FFMPEG_BIN` / `OMP_WEB_FFPROBE_BIN` | 自定义 BGM 提取工具路径 | PATH 中的 `ffmpeg` / `ffprobe` |
-| `OMP_WEB_WALLPAPER_CACHE_MB` | 服务器场景编译缓存上限，单位 MiB（`0` 关闭） | `4096` |
-| `OMP_WEB_WALLPAPER_DIRS` | 服务端壁纸目录，按操作系统路径分隔符分隔；空字符串关闭 Steam 自动发现 | _自动发现 Steam 库_ |
-| `OMP_WEB_WALLPAPER_ASSETS` | 从自己的安装中提供的额外 Wallpaper Engine 资源目录 | _可用时自动发现_ |
-| `OMP_WEB_CODEX_PETS_DIR` | 覆盖本地 Codex 桌宠发现目录 | `$CODEX_HOME/pets` 或 `~/.codex/pets` |
-| `OMP_WEB_PORT` | agent 唤醒 URL 的端口，启动器自动设置；开发服应设为 `OMP_WEB_PORT=30178` | `PORT`，否则 `30177` |
+| `OMP_WEB_HOSTNAME` | 绑定地址 | `127.0.0.1` |
+| `OMP_WEB_PASSWORD` | 网页登录密码 | 无 |
+| `OMP_WEB_NO_OPEN` | `1` = 不自动打开浏览器 | `0` |
+| `OMP_WEB_DISABLE_AUTOUPDATE` | `1` = 关闭 ompweb 自身的更新检查 | `0` |
+| `OMP_WEB_OMP_BIN` | `omp` 路径 | 自动 |
+| `PI_CODING_AGENT_DIR` | omp agent 目录 | `~/.omp/agent` |
+| `OMP_WEB_PORT` | 智能体 webhook URL 使用的端口（开发服务器设为 `30178`） | `PORT` 或 `30177` |
+| `OMP_WEB_STT_ENDPOINT` / `_KEY` / `_MODEL` | 听写用的 OpenAI 兼容转写接口 | 关闭 |
+| `OMP_WEB_FFMPEG_BIN` / `OMP_WEB_FFPROBE_BIN` | 提取壁纸背景音乐 | `PATH` 中查找 |
+| `OMP_WEB_WALLPAPER_DIRS` | 壁纸根目录；留空则关闭 Steam 自动发现 | Steam 自动发现 |
+| `OMP_WEB_WALLPAPER_ASSETS` | 额外的 Wallpaper Engine 资源目录 | 自动 |
+| `OMP_WEB_WALLPAPER_CACHE_MB` | 场景编译缓存大小（`0` 关闭） | `4096` |
+| `OMP_WEB_CODEX_PETS_DIR` | Codex 桌宠目录 | `~/.codex/pets` |
 
-## 本地开发
+## 开发
 
 ```bash
-git clone https://github.com/hsiatein/ompweb.git
-cd ompweb
 npm install
-npm run dev
+npm run dev         # http://127.0.0.1:30178
+npm run typecheck
+npm run lint
+npm test
 ```
 
-本地开发服务器运行在 [http://127.0.0.1:30178](http://127.0.0.1:30178)。
+开发服务器运行期间不要执行 `npm run build`——它会覆盖 `.next/`。
 
-### 代码检查
+## 许可证
 
-```bash
-npm run typecheck   # TypeScript 类型检查
-npm run lint        # ESLint 检查
-npm test            # 运行测试套件
-```
-
-> **注意**：本地开发期间请勿运行 `npm run build`，以免污染 `.next/` 导致开发服务器异常。
-
-## 致谢与许可证
-
-- 本分支基于 [kahme247/ompweb](https://github.com/kahme247/ompweb)，保留并同步其上游工作。
-- 分叉自 [agegr/pi-web](https://github.com/agegr/pi-web)（MIT），针对 [can1357/oh-my-pi](https://github.com/can1357/oh-my-pi) 进行适配。
-- 采用 [MIT 许可证](./LICENSE) 开源。
+MIT。基于 [kahme247/ompweb](https://github.com/kahme247/ompweb)，最初分叉自
+[agegr/pi-web](https://github.com/agegr/pi-web)。

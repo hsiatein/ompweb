@@ -35,6 +35,26 @@ source file's filesystem creation time (modification time when unavailable);
 modified time uses its filesystem modification time. Copying files between
 filesystems can therefore change their apparent added order.
 
+For supported scenes, **Form** offers **Original** (the default) and fixed
+appearances. Standard XRAY effects expose **Fixed base image** and **Fixed X-ray
+image**. Button-driven SceneScript layer changes expose the author's named forms;
+buttons that switch those forms are hidden while a fixed form is selected.
+Single-form scenes retain Original. Fixed forms preserve wind, eye, bone and
+other animation; the existing pause control remains independent, and form
+changes also render while playback is paused.
+
+Selections are saved separately for each wallpaper in this browser and shared
+between its tabs. Switching wallpapers and reloading restore them. Selecting
+Original restores authored interaction; a saved form absent from an updated
+scene falls back to Original. Source artwork stays unchanged.
+
+Form discovery follows bounded, supported SceneScript cursor-button visibility
+transitions, including initially hidden target layers and visibility groups.
+Custom shader selectors, continuously generated states and HTML-wallpaper menus
+retain their authored controls. The server uses the same isolated QuickJS
+interpreter as playback; its WASM packages stay external to the Next.js server
+bundle so their native module/asset loading works.
+
 Import uploads are streamed into `<agent-dir>/web-wallpapers/imports` with a
 512 MiB limit. Larger files can be read in place by adding their server folder.
 Uploads and added folders are shared by clients of that server; selection and

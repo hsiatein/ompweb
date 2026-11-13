@@ -228,7 +228,7 @@ const guest = String.raw`(function(input) {
         globalThis.input.cursorWorldPosition=new Vec3(...event.cursor);
         for(const script of scripts)if(!script.disabled&&event.ids.includes(script.spec.id)&&typeof script[event.type]==='function'){
           const local=event.local?.[script.spec.id];
-          invoke(script,script[event.type],[{worldPosition:globalThis.input.cursorWorldPosition.copy(),...(local?{localPosition:new Vec3(...local)}:{})}]);
+          invoke(script,script[event.type],[{button:0,worldPosition:globalThis.input.cursorWorldPosition.copy(),...(local?{localPosition:new Vec3(...local)}:{})}]);
         }
       }
       globalThis.input.cursorWorldPosition=new Vec3(...(frame.input?.cursor??[0,0,0]));

@@ -1,3 +1,4 @@
+import { spawn } from "child_process";
 import { randomBytes, randomUUID } from "crypto";
 import { accessSync, constants, existsSync, readFileSync, realpathSync } from "fs";
 import http from "http";
@@ -13,7 +14,7 @@ import { AskpassPeerError, verifyAskpassPeer } from "./askpass-peer";
  * client asks this module over a loopback-only HTTP server with the child's
  * token; after checking (lib/askpass-peer.ts) that the request really comes
  * from that client under sudo, the request is shown in every open tab
- * (/api/askpass/events). The typed password goes back to the client, which
+ * (/api/events). The typed password goes back to the client, which
  * prints it for sudo. It never reaches the model, is never logged or stored.
  * Linux only: everywhere else agent sudo behaves as before.
  */
@@ -76,6 +77,11 @@ interface AskpassState {
   pending: Map<string, PendingRequest>;
   listeners: Set<(requests: AskpassRequestInfo[]) => void>;
   server: Promise<number> | null;
+  /**
+   * Settings → "Answer sudo automatically": the verified password, held in
+   * this process's memory only (never written or logged). A restart turns it off.
+   */
+  autoPassword?: string | null;
 }
 
 declare global {
@@ -126,6 +132,54 @@ export function answerAskpassRequest(id: string, password: string | null): boole
   const entry = state().pending.get(id);
   if (!entry) return false;
   entry.finish(password);
+  return true;
+}
+
+/** Can this server answer sudo prompts at all (Linux, helper files, a real sudo)? */
+export function askpassSupported(): boolean {
+  if (process.platform !== "linux") return false;
+  const dir = helperDir();
+  return existsSync(path.join(dir, "omp-web-askpass")) && existsSync(path.join(dir, "askpass-client.cjs")) && findRealSudo(dir) !== null;
+}
+
+export function askpassAutoEnabled(): boolean {
+  return typeof state().autoPassword === "string";
+}
+
+/**
+ * Check `password` against this machine's sudo without using or refreshing
+ * sudo's cached credentials (`-k` with a command). The password goes through
+ * the child's stdin only.
+ */
+function verifySudoPassword(password: string): Promise<boolean> {
+  const realSudo = findRealSudo(helperDir());
+  if (!realSudo) return Promise.resolve(false);
+  const { promise, resolve } = Promise.withResolvers<boolean>();
+  const child = spawn(realSudo, ["-S", "-k", "-p", "", "--", "true"], {
+    stdio: ["pipe", "ignore", "ignore"],
+    env: { ...process.env, LC_ALL: "C" },
+  });
+  const timer = setTimeout(() => child.kill("SIGKILL"), 15_000);
+  child.on("error", () => { clearTimeout(timer); resolve(false); });
+  child.on("close", (code) => { clearTimeout(timer); resolve(code === 0); });
+  child.stdin.on("error", () => {});
+  child.stdin.end(`${password}\n`);
+  return promise;
+}
+
+/**
+ * Turn automatic answers on (after verifying the password) or off. While on,
+ * every verified sudo prompt from an agent is answered with the stored
+ * password without a dialog; prompts already waiting are answered at once.
+ */
+export async function setAskpassAuto(password: string | null): Promise<boolean> {
+  if (password === null) {
+    state().autoPassword = null;
+    return true;
+  }
+  if (!(await verifySudoPassword(password))) return false;
+  state().autoPassword = password;
+  for (const entry of [...state().pending.values()]) entry.finish(password);
   return true;
 }
 
@@ -217,6 +271,12 @@ async function handleClient(req: http.IncomingMessage, res: http.ServerResponse,
 
   const aborted = new AbortController();
   res.on("close", () => aborted.abort());
+  const auto = state().autoPassword;
+  if (typeof auto === "string") {
+    const who = identity();
+    console.info(`[omp-web] sudo answered automatically for ${who.sessionName || who.sessionId}: ${command.join(" ")}`);
+    return reply(200, { password: auto });
+  }
   const password = await awaitAskpassAnswer(identity(), prompt, command, aborted.signal);
   if (password === null) return reply(410, { error: "no password given" });
   reply(200, { password });

@@ -6,6 +6,7 @@ import { useI18n } from "@/lib/i18n";
 import { getFileName } from "@/lib/file-paths";
 import { toast } from "@/components/ui/toast";
 import { Check, ConfirmDialog } from "@/components/ui/field";
+import { InfoHint } from "@/components/ui/primitives";
 import { KILL_PERCENT_RANGE, WARN_PERCENT_RANGE, type MemoryGuardSettings } from "@/lib/memory-guard-settings";
 import { formatBytes, type MonitoredProcess, type OwnerUsage, type ProcessOwner, type SystemSnapshot } from "@/lib/system-monitor-types";
 
@@ -51,25 +52,32 @@ function GuardSettingsEditor({ guard, totalBytes, onSaved }: { guard: MemoryGuar
     void save({ [field]: value });
   };
   const absolute = (percent: number) => totalBytes > 0 ? ` ≈ ${formatBytes((totalBytes * percent) / 100)}` : "";
+  const [warnBefore, warnAfter = ""] = t("systemPanel.warnInline").split("{n}");
+  const [killBefore, killAfter = ""] = t("systemPanel.killInline").split("{n}");
 
   return (
     <div className="system-guard-settings">
       <Check label={t("systemPanel.guardEnabled")} checked={guard.enabled} onChange={(enabled) => void save({ enabled })} />
       <label className="system-guard-field">
-        <span>{t("systemPanel.killBelow")}</span>
-        <input type="number" min={KILL_PERCENT_RANGE.min} max={KILL_PERCENT_RANGE.max} step={0.5} value={kill} disabled={!guard.enabled}
-          onChange={(event) => setKill(event.target.value)} onBlur={() => commit("killBelowPercent", kill)}
-          onKeyDown={(event) => { if (event.key === "Enter") commit("killBelowPercent", kill); }} />
-        <span className="system-dim">%{absolute(guard.killBelowPercent)}</span>
-      </label>
-      <label className="system-guard-field">
-        <span>{t("systemPanel.warnBelow")}</span>
+        <span>{warnBefore}</span>
         <input type="number" min={WARN_PERCENT_RANGE.min} max={WARN_PERCENT_RANGE.max} step={1} value={warn}
           onChange={(event) => setWarn(event.target.value)} onBlur={() => commit("warnBelowPercent", warn)}
           onKeyDown={(event) => { if (event.key === "Enter") commit("warnBelowPercent", warn); }} />
-        <span className="system-dim">%{absolute(guard.warnBelowPercent)}</span>
+        <span>{warnAfter}</span>
+        <span className="system-dim">{absolute(guard.warnBelowPercent)}</span>
       </label>
-      <p className="system-dim system-guard-help">{t("systemPanel.guardHelp")}</p>
+      <label className="system-guard-field">
+        <span>{killBefore}</span>
+        <input type="number" min={KILL_PERCENT_RANGE.min} max={KILL_PERCENT_RANGE.max} step={0.5} value={kill} disabled={!guard.enabled}
+          onChange={(event) => setKill(event.target.value)} onBlur={() => commit("killBelowPercent", kill)}
+          onKeyDown={(event) => { if (event.key === "Enter") commit("killBelowPercent", kill); }} />
+        <span>{killAfter}</span>
+        <span className="system-dim">{absolute(guard.killBelowPercent)}</span>
+      </label>
+      <p className="system-dim system-guard-help">
+        {t("systemPanel.guardScope")}
+        <InfoHint label={t("systemPanel.guard")}>{t("systemPanel.guardHelp")}</InfoHint>
+      </p>
     </div>
   );
 }

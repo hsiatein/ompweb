@@ -71,6 +71,25 @@ export async function register(): Promise<void> {
   } catch (error) {
     console.warn(`[omp-web] scheduled_tasks tool could not be registered: ${error instanceof Error ? error.message : String(error)}`);
   }
+  // Same lazy import as scheduled_tasks: a failure only disables this tool.
+  try {
+    await import("@/lib/agent-memo-tool");
+  } catch (error) {
+    console.warn(`[omp-web] memos tool could not be registered: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  try {
+    await import("@/lib/agent-status-tool");
+  } catch (error) {
+    console.warn(`[omp-web] status_board tool could not be registered: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  // Enabled web plugins: start their servers (and register their agent tools).
+  try {
+    const { startEnabledWebPlugins } = await import("@/lib/web-plugins");
+    startEnabledWebPlugins();
+  } catch (error) {
+    console.warn(`[omp-web] web plugins could not be started: ${error instanceof Error ? error.message : String(error)}`);
+  }
 
   // Re-arm messages scheduled for later; any that came due while omp-web was
   // down are sent now.

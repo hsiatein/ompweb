@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useIsMobile } from "@/hooks/useIsMobile";
 import { useI18n } from "@/lib/i18n";
 import { isSafeExternalUrl } from "@/lib/safe-url";
+import type { LoginAccount, LoginOutcome } from "@/lib/login-accounts";
+import { notifyAccountRoutingChanged } from "@/lib/account-choices";
 import { omitUntouchedModelDrafts } from "@/lib/models-config-drafts";
 import { formatApiError } from "@/lib/i18n/api-error";
 import {
@@ -53,11 +55,12 @@ import {
   ModelRolesDetail,
   ModelsConfigSurface,
   NativeRegistryDetail,
+  ProviderAccountSettings,
   ProviderIcon,
   RetryFallbackDetail,
   SectionTitle,
 } from "./ModelsConfig-panels";
-import { AccountRoutingSettings } from "./AccountRoutingSettings";
+import { ConnectedProviders } from "./ConnectedProviders";
 
 
 
@@ -779,10 +782,21 @@ function ModelDetail({
 
 // ── OAuth detail ──────────────────────────────────────────────────────────────
 
+function accountText(account: LoginAccount, t: (key: string, vars?: Record<string, string | number>) => string): string {
+  const name = account.name ?? t("modelsConfig.unnamedAccount");
+  return account.plan ? `${name} (${account.plan})` : name;
+}
+
 function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefresh: () => void }) {
   const { t, tn } = useI18n();
   const [loginState, setLoginState] = useState<OAuthLoginState>({ phase: "idle" });
   const [inputValue, setInputValue] = useState("");
+  // The running flow adds another account (vs. first login / re-login).
+  const [addingAccount, setAddingAccount] = useState(false);
+  // Login method (omp provider id) for the next sign-in, and the one the running flow uses.
+  const loginMethods = provider.loginMethods ?? [{ id: provider.id, name: provider.name }];
+  const [methodId, setMethodId] = useState(provider.id);
+  const [activeLoginId, setActiveLoginId] = useState(provider.id);
   const eventSourceRef = useRef<EventSource | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -796,6 +810,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
   useEffect(() => {
     setLoginState({ phase: "idle" });
     setInputValue("");
+    setMethodId(provider.id);
     eventSourceRef.current?.close();
     eventSourceRef.current = null;
   }, [provider.id]);
@@ -804,13 +819,18 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
     return () => { eventSourceRef.current?.close(); };
   }, []);
 
-  const handleLogin = useCallback(() => {
+  const handleLogin = useCallback((addAccount: boolean) => {
     eventSourceRef.current?.close();
     setLoginState({ phase: "connecting" });
     setInputValue("");
+    setAddingAccount(addAccount);
+    setActiveLoginId(methodId);
 
-    const es = new EventSource(`/api/auth/login/${encodeURIComponent(provider.id)}`);
+    const es = new EventSource(`/api/auth/login/${encodeURIComponent(methodId)}${addAccount ? "?mode=add" : ""}`);
     eventSourceRef.current = es;
+    // omp sends open_url, then notify/progress, then the code prompt: keep the
+    // sign-in link for the prompt so it can still be reopened (e.g. privately).
+    let authUrl: string | undefined;
 
     es.onmessage = (e) => {
       let data: {
@@ -818,6 +838,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         token?: string; message?: string; placeholder?: string | null;
         userCode?: string; verificationUri?: string; intervalSeconds?: number | null; expiresInSeconds?: number | null;
         options?: { id: string; label: string }[];
+        outcome?: LoginOutcome;
       };
       try {
         data = JSON.parse(e.data) as typeof data;
@@ -826,6 +847,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         return;
       }
       if (data.type === "auth") {
+        authUrl = data.url;
         setLoginState({ phase: "auth", url: data.url!, instructions: data.instructions ?? null, token: data.token! });
         if (isSafeExternalUrl(data.url)) window.open(data.url, "_blank", "noopener,noreferrer");
       } else if (data.type === "device_code") {
@@ -838,15 +860,17 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
         });
         if (isSafeExternalUrl(data.verificationUri)) window.open(data.verificationUri, "_blank", "noopener,noreferrer");
       } else if (data.type === "prompt_request") {
-        setLoginState({ phase: "prompt", message: data.message!, placeholder: data.placeholder ?? null, token: data.token! });
+        setLoginState({ phase: "prompt", message: data.message!, placeholder: data.placeholder ?? null, token: data.token!, ...(authUrl ? { authUrl } : {}) });
       } else if (data.type === "select_request") {
         setLoginState({ phase: "select", message: data.message!, options: data.options ?? [], token: data.token! });
       } else if (data.type === "progress") {
-        setLoginState({ phase: "progress", message: data.message! });
+        setLoginState({ phase: "progress", message: data.message!, ...(authUrl ? { authUrl } : {}) });
       } else if (data.type === "success") {
         es.close();
-        setLoginState({ phase: "success" });
+        setLoginState({ phase: "success", outcome: data.outcome });
         onRefresh();
+        // Account cards below and the usage panel re-read the inventory.
+        notifyAccountRoutingChanged();
       } else if (data.type === "error") {
         es.close();
         setLoginState({ phase: "error", message: data.message! });
@@ -859,7 +883,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
       es.close();
       setLoginState((prev) => prev.phase === "success" ? prev : { phase: "error", message: t("modelsConfig.connectionLost") });
     };
-  }, [provider.id, onRefresh, t]);
+  }, [methodId, onRefresh, t]);
 
   const handleLogout = useCallback(async () => {
     try {
@@ -881,7 +905,7 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
     if (!code.trim()) return;
     setLoginState({ phase: "progress", message: t("modelsConfig.verifying") });
     try {
-      const res = await fetch(`/api/auth/login/${encodeURIComponent(provider.id)}`, {
+      const res = await fetch(`/api/auth/login/${encodeURIComponent(activeLoginId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, code: code.trim() }),
@@ -896,12 +920,12 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
     } catch (e) {
       setLoginState({ phase: "error", message: e instanceof Error ? e.message : t("modelsConfig.networkError") });
     }
-  }, [provider.id, t]);
+  }, [activeLoginId, t]);
 
   const submitSelection = useCallback(async (token: string, value: string) => {
     setLoginState({ phase: "progress", message: t("modelsConfig.continuing") });
     try {
-      const res = await fetch(`/api/auth/login/${encodeURIComponent(provider.id)}`, {
+      const res = await fetch(`/api/auth/login/${encodeURIComponent(activeLoginId)}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, code: value }),
@@ -913,11 +937,13 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
     } catch (e) {
       setLoginState({ phase: "error", message: e instanceof Error ? e.message : t("modelsConfig.networkError") });
     }
-  }, [provider.id, t]);
+  }, [activeLoginId, t]);
 
   const isWorking = loginState.phase === "connecting" || loginState.phase === "progress" ||
     loginState.phase === "auth" || loginState.phase === "device_code" ||
     loginState.phase === "prompt" || loginState.phase === "select";
+  const authLink = loginState.phase === "auth" ? loginState.url
+    : loginState.phase === "prompt" || loginState.phase === "progress" ? loginState.authUrl : undefined;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -933,9 +959,9 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
 
       {/* Status */}
       <div style={{ minHeight: 48 }}>
-        {loginState.phase === "idle" && (
+        {loginState.phase === "idle" && !provider.loggedIn && (
           <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)", lineHeight: 1.5 }}>
-            {provider.loggedIn ? t("modelsConfig.alreadyConnected") : t("modelsConfig.connectAccount", { name: provider.name })}
+            {t("modelsConfig.connectAccount", { name: provider.name })}
           </p>
         )}
         {loginState.phase === "connecting" && (
@@ -966,11 +992,16 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
                 ? t("modelsConfig.completeSignIn")
                 : loginState.message}
             </p>
-            {loginState.phase === "auth" && (
+            {authLink && (
               <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
-                <a href={loginState.url} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", wordBreak: "break-all" }}>
+                <a href={authLink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", wordBreak: "break-all" }}>
                   {t("modelsConfig.browserNotOpened")}
                 </a>
+              </p>
+            )}
+            {authLink && addingAccount && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--status-warning)", lineHeight: 1.5 }}>
+                {t("modelsConfig.addAccountHint")}
               </p>
             )}
             <div style={{ display: "flex", gap: 6 }}>
@@ -1009,15 +1040,48 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
           </div>
         )}
         {loginState.phase === "progress" && (
-          <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{loginState.message}</p>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{loginState.message}</p>
+            {authLink && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--text-dim)", lineHeight: 1.5 }}>
+                <a href={authLink} target="_blank" rel="noopener noreferrer" style={{ color: "var(--accent)", wordBreak: "break-all" }}>{authLink}</a>
+              </p>
+            )}
+            {authLink && addingAccount && (
+              <p style={{ margin: 0, fontSize: 11, color: "var(--status-warning)", lineHeight: 1.5 }}>{t("modelsConfig.addAccountHint")}</p>
+            )}
+          </div>
         )}
         {loginState.phase === "success" && (
-          <p style={{ margin: 0, fontSize: 12, color: "var(--status-success)" }}>{t("modelsConfig.connectedSuccessfully")}</p>
+          loginState.outcome && loginState.outcome.added.length > 0 ? (
+            <p style={{ margin: 0, fontSize: 12, color: "var(--status-success)" }}>
+              {t("modelsConfig.accountAdded", { accounts: loginState.outcome.added.map((account) => accountText(account, t)).join(", ") })}
+            </p>
+          ) : loginState.outcome?.sameAccount ? (
+            <p style={{ margin: 0, fontSize: 12, color: "var(--status-warning)", lineHeight: 1.5 }}>
+              {addingAccount ? t("modelsConfig.sameAccountWhenAdding") : t("modelsConfig.sameAccountRefreshed")}
+            </p>
+          ) : (
+            <p style={{ margin: 0, fontSize: 12, color: "var(--status-success)" }}>{t("modelsConfig.connectedSuccessfully")}</p>
+          )
         )}
         {loginState.phase === "error" && (
           <p style={{ margin: 0, fontSize: 12, color: "var(--status-error)" }}>{loginState.message}</p>
         )}
       </div>
+
+      {!isWorking && loginMethods.length > 1 && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{t("modelsConfig.loginMethod")}</span>
+          <FormSelect
+            value={methodId}
+            onChange={setMethodId}
+            options={loginMethods.map((method) => ({ value: method.id, label: method.name }))}
+            aria-label={t("modelsConfig.loginMethod")}
+            style={{ minWidth: 0, maxWidth: "100%" }}
+          />
+        </div>
+      )}
 
       {/* Actions */}
       <div style={{ display: "flex", gap: 8 }}>
@@ -1030,9 +1094,20 @@ function OAuthDetail({ provider, onRefresh }: { provider: OAuthProvider; onRefre
           </button>
         ) : (
           <>
+            {provider.loggedIn && (
+              <button
+                onClick={() => handleLogin(true)}
+                title={t("modelsConfig.addAccountTitle")}
+                style={{ padding: "5px 14px", background: "var(--accent-strong)", border: "none", borderRadius: 5, color: "var(--on-accent)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              >
+                {t("modelsConfig.addAccount")}
+              </button>
+            )}
             <button
-              onClick={handleLogin}
-              style={{ padding: "5px 14px", background: "var(--accent-strong)", border: "none", borderRadius: 5, color: "var(--on-accent)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+              onClick={() => handleLogin(false)}
+              style={provider.loggedIn
+                ? { padding: "5px 12px", background: "none", border: "1px solid var(--border)", borderRadius: 5, color: "var(--text)", cursor: "pointer", fontSize: 12 }
+                : { padding: "5px 14px", background: "var(--accent-strong)", border: "none", borderRadius: 5, color: "var(--on-accent)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
             >
               {provider.loggedIn ? t("modelsConfig.relogin") : t("modelsConfig.login")}
             </button>
@@ -1081,7 +1156,6 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
   const [runtimeModels, setRuntimeModels] = useState<RuntimeModelEntry[]>([]);
   const [connectedProviders, setConnectedProviders] = useState<ConnectedProvider[]>([]);
   const [runtimeModelsLoading, setRuntimeModelsLoading] = useState(true);
-  const [connectSearch, setConnectSearch] = useState("");
   const [visibleModelKeys, setVisibleModelKeys] = useState<Set<string> | null>(null);
   const [composerPickerSearch, setComposerPickerSearch] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
@@ -1192,14 +1266,6 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
       return next;
     });
   }, [runtimeModels]);
-
-
-  const enableConnectedProvider = useCallback(async (provider: string) => {
-    const response = await fetch("/api/providers/enable", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ provider }) });
-    const data = await response.json() as { error?: string };
-    if (!response.ok || data.error) throw new Error(data.error || `HTTP ${response.status}`);
-    await loadRuntimeModels();
-  }, [loadRuntimeModels]);
 
   const addCustomProvider = useCallback(() => {
     let finalName = "new-provider";
@@ -1343,12 +1409,18 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
     if (selection.type === "oauth") {
       const p = oauthProviders.find((p) => p.id === selection.providerId);
       if (!p) return null;
-      return <OAuthDetail key={p.id} provider={p} onRefresh={() => { loadOAuthProviders(); loadApiKeyProviders(); void loadRuntimeModels(); }} />;
+      return <>
+        <OAuthDetail key={p.id} provider={p} onRefresh={() => { loadOAuthProviders(); loadApiKeyProviders(); void loadRuntimeModels(); }} />
+        {p.loggedIn && <ProviderAccountSettings key={`accounts:${p.id}`} provider={p.id} />}
+      </>;
     }
     if (selection.type === "apikey") {
       const p = apiKeyProviders.find((p) => p.id === selection.providerId);
       if (!p) return null;
-      return <ApiKeyDetail key={p.id} provider={p} />;
+      return <>
+        <ApiKeyDetail key={p.id} provider={p} />
+        {p.configured && <ProviderAccountSettings key={`accounts:${p.id}`} provider={p.id} />}
+      </>;
     }
     if (selection.type === "roles") return <ModelRolesDetail models={runtimeModels} />;
     if (selection.type === "registry") return <NativeRegistryDetail models={runtimeModels} connectedProviders={connectedProviders} onChanged={loadRuntimeModels} />;
@@ -1422,7 +1494,6 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
             <section key={provider.id} style={{ border: "1px dashed var(--border)", borderRadius: "var(--radius-card)", padding: 14, background: "var(--bg-panel)" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, color: "var(--text)", fontSize: 12, fontWeight: 600 }}><ProviderIcon id={provider.id} size={15} />{provider.name}</div>
               <p style={{ margin: "8px 0 0", color: "var(--text-muted)", fontSize: 12, lineHeight: 1.5 }}>{provider.disabled ? t("modelsConfig.connectedDisabledDesc") : t("modelsConfig.connectedNoModelsDesc")}</p>
-              {provider.disabled && <button type="button" onClick={() => void enableConnectedProvider(provider.id).catch((error) => toast.error(t("modelsConfig.couldNotEnableProvider"), error instanceof Error ? error.message : String(error)))} style={{ marginTop: 10, padding: "6px var(--control-padding-inline)", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg)", color: "var(--text)", cursor: "pointer", fontSize: "var(--text-sm)" }}>{t("modelsConfig.enableInOmp")}</button>}
             </section>
           ))}
         </div>
@@ -1574,144 +1645,17 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                     style={{ alignSelf: "flex-start", marginBottom: 4 }}
                   >
                     <ArrowLeft size={14} aria-hidden="true" />
-                    <span>Back to connected accounts</span>
+                    <span>{t("modelsConfig.backToConnected")}</span>
                   </button>
                   {detailContent}
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-                  {/* Active OAuth Accounts */}
-                  {activeOAuth.length > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div className="settings-group-label" style={{ padding: "8px 2px 2px" }}>Active OAuth Accounts ({activeOAuth.length})</div>
-                      <div className="provider-grid">
-                        {activeOAuth.map((p) => {
-                          const models = runtimeModelsByProvider[p.id] ?? [];
-                          return (
-                            <div key={p.id} className="provider-grid-card">
-                              <div>
-                                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                    <ProviderIcon id={p.id} size={28} />
-                                    <div>
-                                      <div style={{ fontSize: 13.5, fontWeight: 700, color: "var(--text)" }}>{p.name}</div>
-                                      <div style={{ fontSize: 11, color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{p.id}</div>
-                                    </div>
-                                  </div>
-                                  <span className="settings-badge ok" style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", fontSize: 11 }}>
-                                    <CheckIcon size={11} aria-hidden="true" /> Connected
-                                  </span>
-                                </div>
-
-                                {models.length > 0 ? (
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 12 }}>
-                                    {models.slice(0, 3).map((m) => (
-                                      <span key={m.id} style={{ fontSize: 10.5, padding: "2px 6px", borderRadius: 4, background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                                        {m.name || m.id}
-                                      </span>
-                                    ))}
-                                    {models.length > 3 && (
-                                      <span style={{ fontSize: 10, color: "var(--text-dim)", padding: "2px 4px", alignSelf: "center" }}>
-                                        +{models.length - 3} more
-                                      </span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div style={{ fontSize: 11.5, color: "var(--text-dim)", marginTop: 10 }}>
-                                    OAuth authenticated
-                                  </div>
-                                )}
-                              </div>
-
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                                <span style={{ fontSize: 11.5, color: "var(--text-dim)" }}>
-                                  {models.length > 0 ? `${models.length} active models` : "Ready to use"}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelection({ type: "oauth", providerId: p.id })}
-                                  className="settings-back"
-                                  style={{ padding: "4px 10px", fontSize: 11.5, border: "1px solid var(--border)", background: "var(--bg)" }}
-                                >
-                                  Configure
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  <AccountRoutingSettings />
-
-                  {/* Active API Key Providers */}
-                  {activeApiKey.length > 0 && (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                      <div className="settings-group-label" style={{ padding: "8px 2px 2px" }}>Configured API Keys ({activeApiKey.length})</div>
-                      <div className="provider-grid">
-                        {activeApiKey.map((p) => {
-                          const models = runtimeModelsByProvider[p.id] ?? [];
-                          return (
-                            <div key={p.id} className="provider-grid-card">
-                              <div>
-                                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 10 }}>
-                                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                                    <ProviderIcon id={p.id} size={28} />
-                                    <div>
-                                      <div style={{ fontSize: "var(--text-md-strong)", fontWeight: 700, color: "var(--text)" }}>{p.displayName}</div>
-                                      <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{p.id}</div>
-                                    </div>
-                                  </div>
-                                  <span className="settings-badge ok" style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: "2px 8px", fontSize: "var(--text-xs)" }}>
-                                    <CheckIcon size={11} aria-hidden="true" /> Key configured
-                                  </span>
-                                </div>
-
-                                {models.length > 0 ? (
-                                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 12 }}>
-                                    {models.slice(0, 3).map((m) => (
-                                      <span key={m.id} style={{ fontSize: "var(--text-xs)", padding: "2px 6px", borderRadius: 4, background: "var(--bg)", border: "1px solid var(--border)", color: "var(--text-muted)", fontFamily: "var(--font-mono)" }}>
-                                        {m.name || m.id}
-                                      </span>
-                                    ))}
-                                    {models.length > 3 && (
-                                      <span style={{ fontSize: "var(--text-2xs)", color: "var(--text-dim)", padding: "2px 4px", alignSelf: "center" }}>
-                                        +{models.length - 3} more
-                                      </span>
-                                    )}
-                                  </div>
-                                ) : (
-                                  <div style={{ fontSize: "var(--text-body)", color: "var(--text-dim)", marginTop: 10 }}>
-                                    System key configured
-                                  </div>
-                                )}
-                              </div>
-
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 12, paddingTop: 10, borderTop: "1px solid var(--border)" }}>
-                                <span style={{ fontSize: "var(--text-body)", color: "var(--text-dim)" }}>
-                                  {p.modelCount > 0 ? `${p.modelCount} models` : "Key ready"}
-                                </span>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelection({ type: "apikey", providerId: p.id })}
-                                  className="settings-back"
-                                  style={{ padding: "4px var(--control-padding-inline)", fontSize: "var(--text-body)", border: "1px solid var(--border)", background: "var(--bg)" }}
-                                >
-                                  Manage
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
+                  <ConnectedProviders oauth={activeOAuth} apiKey={activeApiKey} onManage={setSelection} />
 
                   {activeOAuth.length === 0 && activeApiKey.length === 0 && (
                     <div className="settings-empty" style={{ textAlign: "center", padding: "32px 20px" }}>
                       <div style={{ fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text)", marginBottom: 6 }}>{t("modelsConfig.noConnectedAccounts")}</div>
-                      <div style={{ fontSize: "var(--text-body)", color: "var(--text-muted)", marginBottom: 16 }}>{t("modelsConfig.addOneBelow")}</div>
                       <button
                         type="button"
                         onClick={() => setPickerOpen(true)}
@@ -1722,104 +1666,6 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                       </button>
                     </div>
                   )}
-
-                  {/* Connect other providers */}
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12, marginTop: 8 }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
-                      <div className="settings-group-label" style={{ padding: 0 }}>Add Provider Integration</div>
-                      <div style={{ position: "relative", width: "100%", maxWidth: 320 }}>
-                        <Search size={13} aria-hidden="true" style={{ position: "absolute", left: 9, top: "50%", transform: "translateY(-50%)", color: "var(--text-muted)", pointerEvents: "none" }} />
-                        <input
-                          type="text"
-                          value={connectSearch}
-                          onChange={(e) => setConnectSearch(e.target.value)}
-                          placeholder="Search providers to connect..."
-                          style={{ width: "100%", height: "var(--control-height-sm)", padding: "0 24px 0 28px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", fontSize: "var(--text-sm)", outline: "none" }}
-                        />
-                        {connectSearch && (
-                          <button
-                            type="button"
-                            onClick={() => setConnectSearch("")}
-                            style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: "var(--text-sm)" }}
-                          >
-                            ×
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    {/* Filtered list or curated list */}
-                    {(() => {
-                      const q = connectSearch.trim().toLowerCase();
-                      const unlinkedOAuth = oauthProviders.filter(p => !p.loggedIn);
-                      const unconfiguredApiKey = apiKeyProviders.filter(p => !p.configured);
-                      const matchingOAuth = unlinkedOAuth.filter(p => !q || p.name.toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
-                      const matchingApiKey = unconfiguredApiKey.filter(p => !q || p.displayName.toLowerCase().includes(q) || p.id.toLowerCase().includes(q));
-
-                      const displayedOAuth = q ? matchingOAuth : matchingOAuth.slice(0, 6);
-                      const displayedApiKey = q ? matchingApiKey : matchingApiKey.slice(0, 6);
-
-                      return (
-                        <div className="provider-grid">
-                          {displayedOAuth.map((p) => (
-                            <div key={p.id} className="provider-grid-card" style={{ minHeight: 90 }}>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                                  <ProviderIcon id={p.id} size={24} />
-                                  <div>
-                                    <div style={{ fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text)" }}>{p.name}</div>
-                                    <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>{p.id}</div>
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelection({ type: "oauth", providerId: p.id })}
-                                  className="settings-back"
-                                  style={{ padding: "4px 12px", fontSize: "var(--text-sm)", border: "1px solid var(--border)", background: "var(--bg)" }}
-                                >
-                                  Sign in
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                          {displayedApiKey.map((p) => (
-                            <div key={p.id} className="provider-grid-card" style={{ minHeight: 90 }}>
-                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
-                                  <ProviderIcon id={p.id} size={24} />
-                                  <div>
-                                    <div style={{ fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text)" }}>{p.displayName}</div>
-                                    <div style={{ fontSize: "var(--text-xs)", color: "var(--text-dim)", fontFamily: "var(--font-mono)" }}>API Key</div>
-                                  </div>
-                                </div>
-                                <button
-                                  type="button"
-                                  onClick={() => setSelection({ type: "apikey", providerId: p.id })}
-                                  className="settings-back"
-                                  style={{ padding: "4px 12px", fontSize: "var(--text-sm)", border: "1px solid var(--border)", background: "var(--bg)" }}
-                                >
-                                  Set Key
-                                </button>
-                              </div>
-                            </div>
-                          ))}
-                          {!q && (unlinkedOAuth.length + unconfiguredApiKey.length > 12) && (
-                            <button
-                              type="button"
-                              onClick={() => setPickerOpen(true)}
-                              className="provider-grid-card"
-                              style={{ minHeight: 90, alignItems: "center", justifyContent: "center", gap: 6, cursor: "pointer", borderStyle: "dashed", background: "transparent" }}
-                            >
-                              <Plus size={14} style={{ color: "var(--accent)" }} />
-                              <span style={{ fontSize: "var(--text-body)", fontWeight: 500, color: "var(--text-muted)" }}>
-                                Browse all {unlinkedOAuth.length + unconfiguredApiKey.length} providers…
-                              </span>
-                            </button>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
                 </div>
               )
             )}
@@ -1834,26 +1680,21 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                     style={{ alignSelf: "flex-start", marginBottom: 4 }}
                   >
                     <ArrowLeft size={14} aria-hidden="true" />
-                    <span>Back to custom providers</span>
+                    <span>{t("modelsConfig.backToCustom")}</span>
                   </button>
                   {detailContent}
                 </div>
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-start", justifyContent: "space-between", gap: 16 }}>
-                    <div style={{ flex: "1 1 220px", minWidth: 0, overflowWrap: "anywhere" }}>
-                      <div style={{ fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text)" }}>{t("modelsConfig.customProviders")}</div>
-                      <div style={{ fontSize: "var(--text-body)", color: "var(--text-muted)", marginTop: 3 }}>
-                        Custom endpoints, local Ollama / vLLM models, or reverse proxies defined in <code style={{ fontFamily: "var(--font-mono)", fontSize: "var(--text-xs)" }}>~/.omp/agent/models.yml</code>.
-                      </div>
-                    </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
+                    <div style={{ flex: "1 1 220px", minWidth: 0, fontSize: "var(--text-md)", fontWeight: 600, color: "var(--text)" }}>{t("modelsConfig.customProviders")}</div>
                     <button
                       type="button"
                       onClick={addCustomProvider}
                       className="settings-back"
                       style={{ background: "var(--accent-strong)", color: "var(--on-accent)", border: "1px solid var(--accent-strong)", fontWeight: 600, padding: "6px 14px", flexShrink: 0 }}
                     >
-                      <Plus size={14} aria-hidden="true" /> Add Provider
+                      <Plus size={14} aria-hidden="true" /> {t("modelsConfig.addProvider")}
                     </button>
                   </div>
 
@@ -1877,7 +1718,7 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                           className="settings-back"
                           style={{ border: "1px solid var(--border)", background: "var(--bg-panel)", padding: "6px 12px" }}
                         >
-                          Add Ollama (localhost:11434)
+                          {t("modelsConfig.addOllama")}
                         </button>
                         <button
                           type="button"
@@ -1885,7 +1726,7 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                           className="settings-back"
                           style={{ background: "var(--accent-strong)", color: "var(--on-accent)", border: "1px solid var(--accent-strong)", fontWeight: 600, padding: "6px 12px" }}
                         >
-                          <Plus size={14} aria-hidden="true" /> Add Custom Endpoint
+                          <Plus size={14} aria-hidden="true" /> {t("modelsConfig.addCustomEndpoint")}
                         </button>
                       </div>
                     </div>
@@ -1910,7 +1751,7 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                                   className="settings-back"
                                   style={{ padding: "4px 8px", fontSize: "var(--text-xs)", border: "1px solid var(--border)", background: "var(--bg)" }}
                                 >
-                                  <Plus size={12} aria-hidden="true" /> Add Model
+                                  <Plus size={12} aria-hidden="true" /> {t("modelsConfig.addModelButton")}
                                 </button>
                                 <button
                                   type="button"
@@ -1918,7 +1759,7 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                                   className="settings-back"
                                   style={{ padding: "4px 8px", fontSize: "var(--text-xs)", border: "1px solid var(--border)", background: "var(--bg)" }}
                                 >
-                                  <BookOpen size={12} aria-hidden="true" /> Catalog
+                                  <BookOpen size={12} aria-hidden="true" /> {t("modelsConfig.catalog")}
                                 </button>
                                 <button
                                   type="button"
@@ -1926,14 +1767,15 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                                   className="settings-back"
                                   style={{ padding: "4px 8px", fontSize: "var(--text-xs)", border: "1px solid var(--border)", background: "var(--bg)" }}
                                 >
-                                  Edit
+                                  {t("modelsConfig.edit")}
                                 </button>
                                 <button
                                   type="button"
                                   onClick={() => deleteProvider(pName)}
                                   className="settings-back"
                                   style={{ padding: "4px 8px", fontSize: "var(--text-xs)", border: "1px solid var(--border)", background: "var(--bg)", color: "var(--status-error)" }}
-                                  title="Delete provider"
+                                  title={t("modelsConfig.deleteProvider")}
+                                  aria-label={t("modelsConfig.deleteProvider")}
                                 >
                                   <Trash2 size={12} aria-hidden="true" />
                                 </button>
@@ -1961,7 +1803,7 @@ export function ModelsConfig({ onClose, onSelectTab, onSaved, embedded = false, 
                               </div>
                             ) : (
                               <div style={{ fontSize: 11.5, color: "var(--text-dim)", paddingTop: 4, borderTop: "1px solid var(--border)" }}>
-                                No models defined yet. Click &quot;Add Model&quot; or &quot;Catalog&quot; above to configure models.
+                                {t("modelsConfig.noModelsYet")}
                               </div>
                             )}
                           </div>

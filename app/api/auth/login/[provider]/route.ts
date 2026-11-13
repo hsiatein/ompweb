@@ -1,9 +1,22 @@
 import { homedir } from "os";
 import { invalidateModelsCache } from "@/lib/models-cache";
-import { enableProvider } from "@/lib/omp/model-roles";
 import { RpcProcess, type RpcFrame } from "@/lib/omp/rpc-process";
 import { startControlRpc } from "@/lib/omp/rpc-control";
 import { disposeUtilityRpc } from "@/lib/omp/rpc-utility";
+import { credentialProviderId } from "@/lib/omp/login-providers";
+import { getProviderUsage, invalidateProviderUsage } from "@/lib/provider-usage";
+import { addAccountAuthUrl, diffLoginAccounts, loginAccounts, type LoginAccount, type LoginOutcome } from "@/lib/login-accounts";
+import { loadWebServerSettings } from "@/lib/web-settings";
+
+/** Current accounts, fresh (not the 60 s usage cache); null when omp usage is unavailable. */
+async function currentAccounts(): Promise<LoginAccount[] | null> {
+  invalidateProviderUsage();
+  try {
+    return loginAccounts((await getProviderUsage({}, loadWebServerSettings().accountAliases)).reports);
+  } catch {
+    return null;
+  }
+}
 
 export const dynamic = "force-dynamic";
 
@@ -64,12 +77,15 @@ export async function POST(
   return Response.json({ ok: true, provider });
 }
 
-// GET /api/auth/login/[provider] — SSE stream for the login flow
+// GET /api/auth/login/[provider][?mode=add] — SSE stream for the login flow.
+// mode=add (another account of a connected provider) makes OpenAI ask for a
+// fresh sign-in; omp itself keeps every distinct account it is given.
 export async function GET(
   req: Request,
   { params }: { params: Promise<{ provider: string }> }
 ) {
   const { provider } = await params;
+  const addAccount = new URL(req.url).searchParams.get("mode") === "add";
   const token = `${provider}-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const registry = getLoginRegistry();
   const encoder = new TextEncoder();
@@ -106,9 +122,10 @@ export async function GET(
         if (frame.type !== "extension_ui_request") return;
         const method = frame.method;
         if (method === "open_url") {
+          const url = String(frame.url ?? "");
           send({
             type: "auth",
-            url: String(frame.url ?? ""),
+            url: addAccount ? addAccountAuthUrl(url) : url,
             instructions: typeof frame.instructions === "string" ? frame.instructions : null,
             token,
           });
@@ -133,6 +150,9 @@ export async function GET(
           if (pendingInputId !== null && frame.targetId === pendingInputId) pendingInputId = null;
         }
       };
+
+      // Inventory before the login, to report which account it added.
+      const accountsBefore = currentAccounts();
 
       try {
         proc = await startControlRpc(
@@ -171,10 +191,14 @@ export async function GET(
 
       try {
         await child.sendCommand({ type: "login", providerId: provider }, LOGIN_TIMEOUT_MS);
-        enableProvider(provider);
+        // An alias method (ChatGPT device code) stores into its target provider.
+        const credentialProvider = credentialProviderId(provider);
         invalidateModelsCache();
         disposeUtilityRpc();
-        send({ type: "success" });
+        const before = await accountsBefore;
+        const after = before ? await currentAccounts() : null;
+        const outcome: LoginOutcome | null = before && after ? diffLoginAccounts(before, after, credentialProvider) : null;
+        send({ type: "success", ...(outcome ? { outcome } : {}) });
       } catch (error) {
         if (req.signal.aborted) {
           send({ type: "cancelled" });

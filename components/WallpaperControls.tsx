@@ -8,21 +8,20 @@ import { useI18n } from "@/lib/i18n";
 import { Tooltip } from "./ui/primitives";
 export function WallpaperControls() {
   const { preferences, update } = useWallpaperPreferences();
-  const { locale } = useI18n();
-  const zh = locale.startsWith("zh");
+  const { t } = useI18n();
   const audio = useSyncExternalStore(subscribeWallpaperAudio, wallpaperAudioState, serverWallpaperAudioState);
   const hasAudio = preferences.kind !== "image" || !!preferences.bgmId;
-  return <div className="wallpaper-controls" role="group" aria-label={zh ? "壁纸与玻璃" : "Wallpaper and glass"}>
+  return <div className="wallpaper-controls" role="group" aria-label={t("wallpaper.wallpaperAndGlass")}>
     {([
-      ["default", PanelsTopLeft, zh ? "默认：局部毛玻璃" : "Default: local glass"],
-      ["clear", Square, zh ? "全透明玻璃" : "Clear glass"],
-      ["frosted", Blend, zh ? "全毛玻璃" : "Frosted glass"],
+      ["default", PanelsTopLeft, t("wallpaper.defaultLocalGlass")],
+      ["clear", Square, t("wallpaper.clearGlass")],
+      ["frosted", Blend, t("wallpaper.frostedGlass")],
     ] as const).map(([mode, Icon, title]) => <Tooltip key={mode} content={title}><button type="button" aria-label={title} aria-pressed={preferences.glass === mode} disabled={!preferences.id} onClick={() => update({ glass: mode })}><Icon size={15} /></button></Tooltip>)}
-    {preferences.id && hasAudio && <Tooltip content={preferences.paused ? (zh ? "播放壁纸" : "Play wallpaper") : (zh ? "暂停壁纸" : "Pause wallpaper")}><button type="button" aria-label={preferences.paused ? (zh ? "播放壁纸" : "Play wallpaper") : (zh ? "暂停壁纸" : "Pause wallpaper")} onClick={() => update({ paused: !preferences.paused })}>{preferences.paused ? <Play size={15} /> : <Pause size={15} />}</button></Tooltip>}
+    {preferences.id && hasAudio && <Tooltip content={preferences.paused ? t("wallpaper.playWallpaper") : t("wallpaper.pauseWallpaper")}><button type="button" aria-label={preferences.paused ? t("wallpaper.playWallpaper") : t("wallpaper.pauseWallpaper")} onClick={() => update({ paused: !preferences.paused })}>{preferences.paused ? <Play size={15} /> : <Pause size={15} />}</button></Tooltip>}
     {preferences.id && hasAudio && <>
-      <Tooltip content={audio.error || (audio.blocked ? (zh ? "点击启用壁纸声音" : "Click to enable wallpaper audio") : preferences.muted ? (zh ? "取消静音" : "Unmute") : (zh ? "壁纸静音" : "Mute wallpaper"))}><button type="button" aria-label={preferences.muted ? (zh ? "取消静音" : "Unmute") : (zh ? "壁纸静音" : "Mute wallpaper")} aria-pressed={preferences.muted} onClick={() => { if (!audio.blocked) update({ muted: !preferences.muted }); }}>{preferences.muted || preferences.volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}</button></Tooltip>
-      <input className="wallpaper-volume" type="range" min="0" max="100" aria-label={zh ? "壁纸音量" : "Wallpaper volume"} title={`${preferences.volume}%`} value={preferences.volume} onChange={e => update({ volume: Number(e.target.value), muted: false })} />
-      {preferences.kind === "scene" && <Tooltip content={audio.capturing ? (zh ? "停止系统音频响应" : "Stop system audio response") : (zh ? "授权系统音频响应" : "Share system audio for effects")}><button type="button" aria-label={zh ? "系统音频响应" : "System audio response"} aria-pressed={audio.capturing} onClick={() => void toggleWallpaperAudioCapture().catch(e => toast.error(e.message))}><AudioLines size={15} /></button></Tooltip>}
+      <Tooltip content={audio.error || (audio.blocked ? t("wallpaper.clickToEnableWallpaperAudio") : preferences.muted ? t("wallpaper.unmute") : t("wallpaper.muteWallpaper"))}><button type="button" aria-label={preferences.muted ? t("wallpaper.unmute") : t("wallpaper.muteWallpaper")} aria-pressed={preferences.muted} onClick={() => { if (!audio.blocked) update({ muted: !preferences.muted }); }}>{preferences.muted || preferences.volume === 0 ? <VolumeX size={15} /> : <Volume2 size={15} />}</button></Tooltip>
+      <input className="wallpaper-volume" type="range" min="0" max="100" aria-label={t("wallpaper.wallpaperVolume")} title={`${preferences.volume}%`} value={preferences.volume} onChange={e => update({ volume: Number(e.target.value), muted: false })} />
+      {preferences.kind === "scene" && <Tooltip content={audio.capturing ? t("wallpaper.stopSystemAudioResponse") : t("wallpaper.shareSystemAudioForEffects")}><button type="button" aria-label={t("wallpaper.systemAudioResponse")} aria-pressed={audio.capturing} onClick={() => void toggleWallpaperAudioCapture().catch(e => toast.error(e.message))}><AudioLines size={15} /></button></Tooltip>}
     </>}
   </div>;
 }

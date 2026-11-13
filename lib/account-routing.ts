@@ -1,236 +1,170 @@
-import { createHash } from "crypto";
-import { createReadStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "fs";
+import { createHash, randomUUID } from "crypto";
+import { createReadStream, existsSync, readFileSync, rmSync } from "fs";
 import path from "path";
 import { createInterface } from "readline";
-import { parse, stringify } from "yaml";
-import { getAgentDir, getSettingsPath } from "./omp/paths";
+import { getAgentDir } from "./omp/paths";
 import { getProviderAccounts, type ProviderAccount, type ProviderAccountIdentity } from "./provider-usage";
 import { PROVIDER_ACCOUNT_KEY_RE } from "./provider-usage-types";
 import { isRecord } from "./type-guards";
 import type { AccountPins } from "./account-choices";
-
-/**
- * Which OAuth account omp uses, steered through omp's own
- * `auth.accountPolicies` (omp has no RPC to pick or disable an account).
- *
- * - A disabled account gets `reservePct: 100`: omp ranks it after every
- *   account that still has quota, so it only serves when the others are
- *   exhausted or blocked.
- * - A session pin gives the chosen account `priority: 100` and every other
- *   account of that provider `reservePct: 100`. Reserve status also breaks
- *   omp's per-session stickiness, so a pin moves a running conversation over.
- *
- * Policies are spawn-time config: they reach a session's omp child as a
- * `--config` overlay, and a changed signature restarts an idle child before
- * its next prompt (`AgentSessionWrapper.send`).
- */
-
-interface AccountRoutingState {
-  disabled: string[];
-  sessions: Record<string, AccountPins>;
-}
-
-export interface AccountPolicy {
-  provider: string;
-  account: ProviderAccountIdentity;
-  priority?: number;
-  reservePct?: number;
-}
+import { globalRequestPolicy, globalRequestPolicyPath, routingStatePath, sessionRequestPolicy, writePolicyJson, type RoutingState } from "./request-policy-files";
 
 const PROVIDER_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 const SESSION_KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
-const PINNED_PRIORITY = 100;
-const FULL_RESERVE_PCT = 100;
-
-function statePath(): string {
-  return path.join(getAgentDir(), "omp-web-account-routing.json");
-}
-
+type Binding = { sessionId: string; pins?: AccountPins; provider?: string };
 declare global {
-  // Shared across module instances (instrumentation and route bundles).
-  var __ompWebAccountRouting: { path: string; state: AccountRoutingState } | undefined;
+  var __ompWebHardRouting: { path: string; state: RoutingState; bindings: Map<string, Binding> } | undefined;
 }
-
 export function sanitizeAccountPins(raw: unknown): AccountPins {
-  const pins: AccountPins = {};
-  if (!isRecord(raw)) return pins;
+  if (raw === undefined) return {};
+  if (!isRecord(raw)) throw new Error("Invalid account selection");
+  const pins: AccountPins = Object.create(null);
   for (const [provider, key] of Object.entries(raw)) {
-    if (PROVIDER_ID_RE.test(provider) && typeof key === "string" && PROVIDER_ACCOUNT_KEY_RE.test(key)) pins[provider] = key;
+    if (!isProviderId(provider) || typeof key !== "string" || !PROVIDER_ACCOUNT_KEY_RE.test(key)) throw new Error("Invalid account selection");
+    pins[provider] = key;
   }
   return pins;
 }
-
 export function isAccountRoutingSessionKey(value: unknown): value is string {
   return typeof value === "string" && SESSION_KEY_RE.test(value);
 }
-
 export function isProviderId(value: unknown): value is string {
   return typeof value === "string" && PROVIDER_ID_RE.test(value);
 }
-
-export function loadAccountRouting(): AccountRoutingState {
-  const file = statePath();
-  const cached = globalThis.__ompWebAccountRouting;
-  if (cached?.path === file) return cached.state;
-  const state: AccountRoutingState = { disabled: [], sessions: {} };
-  try {
-    if (existsSync(file)) {
-      const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
-      if (isRecord(raw)) {
-        if (Array.isArray(raw.disabled)) {
-          state.disabled = [...new Set(raw.disabled.filter((key): key is string => typeof key === "string" && PROVIDER_ACCOUNT_KEY_RE.test(key)))];
-        }
-        if (isRecord(raw.sessions)) {
-          for (const [sessionId, pins] of Object.entries(raw.sessions)) {
-            const clean = sanitizeAccountPins(pins);
-            if (SESSION_KEY_RE.test(sessionId) && Object.keys(clean).length > 0) state.sessions[sessionId] = clean;
-          }
-        }
-      }
+export function loadAccountRouting(): RoutingState {
+  const file = routingStatePath();
+  if (globalThis.__ompWebHardRouting?.path === file) return globalThis.__ompWebHardRouting.state;
+  let state: RoutingState = { disabled: [], disabledProviders: [], sessions: {}, providers: {}, accounts: [] };
+  if (existsSync(file)) {
+    const raw: unknown = JSON.parse(readFileSync(file, "utf8"));
+    if (!isRecord(raw) || !Array.isArray(raw.disabled) || !raw.disabled.every(key => typeof key === "string" && PROVIDER_ACCOUNT_KEY_RE.test(key)) || !isRecord(raw.sessions)) throw new Error("Invalid account routing state");
+    const disabledProviders = raw.disabledProviders ?? [];
+    const providers = raw.providers ?? {};
+    const accounts = raw.accounts ?? [];
+    if (!Array.isArray(disabledProviders) || !disabledProviders.every(isProviderId) || !isRecord(providers) || !Array.isArray(accounts)) throw new Error("Invalid account routing state");
+    const sessions: Record<string, AccountPins> = {};
+    for (const [id, pins] of Object.entries(raw.sessions)) {
+      if (!isAccountRoutingSessionKey(id)) throw new Error("Invalid routing session");
+      sessions[id] = sanitizeAccountPins(pins);
     }
-  } catch {
-    // Unreadable state falls back to omp choosing every account.
+    for (const [id, provider] of Object.entries(providers)) if (!isAccountRoutingSessionKey(id) || !isProviderId(provider)) throw new Error("Invalid provider selection");
+    for (const account of accounts) {
+      if (!isRecord(account) || !isProviderId(account.provider) || typeof account.accountKey !== "string" || !PROVIDER_ACCOUNT_KEY_RE.test(account.accountKey) || !isRecord(account.identity) || !Object.keys(account.identity).length || !Object.entries(account.identity).every(([key, value]) => ["accountId", "email", "orgId", "projectId"].includes(key) && typeof value === "string" && value.length > 0)) throw new Error("Invalid saved account identity");
+    }
+    state = { disabled: raw.disabled, disabledProviders, sessions, providers: providers as Record<string, string>, accounts: accounts as ProviderAccount[] };
   }
-  globalThis.__ompWebAccountRouting = { path: file, state };
+  globalThis.__ompWebHardRouting = { path: file, state, bindings: new Map() };
   return state;
 }
-
-function writeAtomic(file: string, content: string): void {
-  const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
-  try {
-    writeFileSync(temp, content, { encoding: "utf8", mode: 0o600 });
-    renameSync(temp, file);
-  } finally {
-    rmSync(temp, { force: true });
-  }
+function writeBinding(file: string, binding: Binding, state: RoutingState): void {
+  writePolicyJson(file, sessionRequestPolicy(state, state.sessions[binding.sessionId] ?? binding.pins ?? {}, state.providers[binding.sessionId] ?? binding.provider));
 }
-
-function saveAccountRouting(state: AccountRoutingState): AccountRoutingState {
-  const file = statePath();
-  mkdirSync(path.dirname(file), { recursive: true });
-  writeAtomic(file, `${JSON.stringify(state, null, 2)}\n`);
-  globalThis.__ompWebAccountRouting = { path: file, state };
+function saveAccountRouting(state: RoutingState): RoutingState {
+  writePolicyJson(routingStatePath(), state);
+  writePolicyJson(globalRequestPolicyPath(), globalRequestPolicy(state));
+  const runtime = globalThis.__ompWebHardRouting!;
+  runtime.state = state;
+  for (const [file, binding] of runtime.bindings) writeBinding(file, binding, state);
   return state;
 }
-
-export function setAccountDisabled(accountKey: string, disabled: boolean): AccountRoutingState {
+/** Resolve historical opaque keys once, retaining identities of logged-out disabled accounts. */
+export async function refreshRoutingAccounts(): Promise<void> {
+  const accounts = await getProviderAccounts();
   const current = loadAccountRouting();
-  const rest = current.disabled.filter((key) => key !== accountKey);
+  const merged = new Map(current.accounts.map(account => [account.accountKey, account]));
+  for (const account of accounts) merged.set(account.accountKey, account);
+  saveAccountRouting({ ...current, accounts: [...merged.values()] });
+}
+function requireAccount(state: RoutingState, accountKey: string, provider?: string): ProviderAccount {
+  const account = state.accounts.find(account => account.accountKey === accountKey && (!provider || account.provider === provider));
+  if (!account) throw new Error("Account identity is unavailable; refresh connected accounts");
+  return account;
+}
+export function setAccountDisabled(accountKey: string, disabled: boolean): RoutingState {
+  const current = loadAccountRouting();
+  if (disabled) requireAccount(current, accountKey);
+  const rest = current.disabled.filter(key => key !== accountKey);
   return saveAccountRouting({ ...current, disabled: disabled ? [...rest, accountKey] : rest });
 }
-
-/** Replace one provider's pin for a session; `null` returns it to omp's choice. */
-export function setSessionAccountPin(sessionId: string, provider: string, accountKey: string | null): AccountPins {
+export function setProviderDisabled(provider: string, disabled: boolean): RoutingState {
+  if (!isProviderId(provider)) throw new Error("Invalid provider");
   const current = loadAccountRouting();
-  const pins = { ...current.sessions[sessionId] };
+  const rest = current.disabledProviders.filter(value => value !== provider);
+  return saveAccountRouting({ ...current, disabledProviders: disabled ? [...rest, provider] : rest });
+}
+export function setSessionProviderPin(sessionId: string, provider: string | null): void {
+  const current = loadAccountRouting();
+  if (provider !== null && (!isProviderId(provider) || current.disabledProviders.includes(provider))) throw new Error("Selected provider is disabled or invalid");
+  const providers = { ...current.providers };
+  if (provider) providers[sessionId] = provider;
+  else delete providers[sessionId];
+  for (const binding of globalThis.__ompWebHardRouting!.bindings.values()) if (binding.sessionId === sessionId) binding.provider = undefined;
+  saveAccountRouting({ ...current, providers });
+}
+export function setSessionAccountPin(sessionId: string, provider: string, accountKey: string | null): AccountPins {
+  const pins = { ...loadAccountRouting().sessions[sessionId] };
   if (accountKey) pins[provider] = accountKey;
   else delete pins[provider];
-  return setSessionAccountPins(sessionId, pins, current);
+  return setSessionAccountPins(sessionId, pins);
 }
-
-export function setSessionAccountPins(sessionId: string, pins: AccountPins, current = loadAccountRouting()): AccountPins {
-  const sessions = { ...current.sessions };
-  if (Object.keys(pins).length > 0) sessions[sessionId] = pins;
-  else delete sessions[sessionId];
-  saveAccountRouting({ ...current, sessions });
+export function setSessionAccountPins(sessionId: string, pins: AccountPins): AccountPins {
+  const current = loadAccountRouting();
+  pins = sanitizeAccountPins(pins);
+  for (const [provider, key] of Object.entries(pins)) {
+    if (current.sessions[sessionId]?.[provider] === key) continue;
+    requireAccount(current, key, provider);
+    if (current.disabledProviders.includes(provider) || current.disabled.includes(key)) throw new Error("Selected account or provider is disabled");
+  }
+  saveAccountRouting({ ...current, sessions: { ...current.sessions, [sessionId]: pins } });
   return pins;
 }
-
 export function forgetSessionAccountPins(sessionId: string): void {
   const current = loadAccountRouting();
-  if (current.sessions[sessionId]) setSessionAccountPins(sessionId, {}, current);
+  const sessions = { ...current.sessions };
+  const providers = { ...current.providers };
+  delete sessions[sessionId];
+  delete providers[sessionId];
+  saveAccountRouting({ ...current, sessions, providers });
 }
-
-/** Changes whenever the policies a session's child should run with change. */
-export function accountRoutingSignature(sessionId: string, pinsOverride?: AccountPins): string {
+export function bindAccountRoutingPolicy(file: string, sessionId: string): void {
   const state = loadAccountRouting();
+  const binding = globalThis.__ompWebHardRouting!.bindings.get(file);
+  if (!binding || binding.sessionId === sessionId) return;
+  const pins = state.sessions[binding.sessionId] ?? binding.pins;
+  const provider = state.providers[binding.sessionId] ?? binding.provider;
+  binding.sessionId = sessionId;
+  binding.pins = undefined;
+  binding.provider = undefined;
+  saveAccountRouting({
+    ...state,
+    sessions: pins ? { ...state.sessions, [sessionId]: state.sessions[sessionId] ?? pins } : state.sessions,
+    providers: provider ? { ...state.providers, [sessionId]: state.providers[sessionId] ?? provider } : state.providers,
+  });
+}
+export function releaseAccountRoutingPolicy(file: string): void {
+  globalThis.__ompWebHardRouting?.bindings.delete(file);
+  rmSync(file, { force: true });
+}
+export async function accountRoutingSpawnArgs(sessionId: string, pinsOverride?: AccountPins, providerOverride?: string): Promise<{ file: string; env: Record<string, string> }> {
+  let state = loadAccountRouting();
   const pins = pinsOverride ?? state.sessions[sessionId] ?? {};
-  return JSON.stringify([[...state.disabled].sort(), Object.entries(pins).sort(([a], [b]) => a.localeCompare(b))]);
-}
-
-const MATCH_FIELD_SETS: Array<Array<keyof ProviderAccountIdentity>> = [
-  ["accountId"], ["email"], ["projectId"], ["accountId", "orgId"], ["email", "orgId"], ["projectId", "orgId"],
-];
-
-// omp rejects a policy that matches zero or several stored accounts, and that
-// rejection fails every request for the provider. Match on the fewest fields
-// that tell this provider's accounts apart.
-function matchIdentity(account: ProviderAccount, siblings: ProviderAccount[]): ProviderAccountIdentity | undefined {
-  for (const fields of MATCH_FIELD_SETS) {
-    if (!fields.every((field) => account.identity[field])) continue;
-    const same = (other: ProviderAccount) => fields.every((field) => other.identity[field] === account.identity[field]);
-    if (siblings.filter(same).length !== 1) continue;
-    return Object.fromEntries(fields.map((field) => [field, account.identity[field]]));
+  const keys = [...state.disabled, ...Object.values(pins)];
+  if (keys.some(key => !state.accounts.some(account => account.accountKey === key))) {
+    await refreshRoutingAccounts();
+    state = loadAccountRouting();
   }
-  return undefined;
-}
-
-/** omp policies for the accounts omp-web steers; providers with one account are left alone. */
-export function buildAccountPolicies(accounts: ProviderAccount[], disabled: ReadonlySet<string>, pins: AccountPins): AccountPolicy[] {
-  const byProvider = new Map<string, ProviderAccount[]>();
-  for (const account of accounts) byProvider.set(account.provider, [...(byProvider.get(account.provider) ?? []), account]);
-  const policies: AccountPolicy[] = [];
-  for (const [provider, siblings] of byProvider) {
-    if (siblings.length < 2) continue;
-    const matches = siblings.map((account) => ({ account, match: matchIdentity(account, siblings) }));
-    if (matches.some(({ match }) => !match)) continue;
-    const pinned = siblings.find((account) => account.accountKey === pins[provider]);
-    for (const { account, match } of matches) {
-      if (pinned) {
-        policies.push(account === pinned
-          ? { provider, account: match!, priority: PINNED_PRIORITY }
-          : { provider, account: match!, reservePct: FULL_RESERVE_PCT });
-      } else if (disabled.has(account.accountKey)) {
-        policies.push({ provider, account: match!, reservePct: FULL_RESERVE_PCT });
-      }
-    }
+  const selectedProvider = providerOverride ?? state.providers[sessionId];
+  if (selectedProvider !== undefined && (!isProviderId(selectedProvider) || state.disabledProviders.includes(selectedProvider))) throw new Error("Selected provider is disabled or invalid");
+  for (const [provider, key] of Object.entries(pins)) {
+    requireAccount(state, key, provider);
+    if (state.disabled.includes(key) || state.disabledProviders.includes(provider)) throw new Error("Selected account or provider is disabled");
   }
-  return policies;
-}
-
-function configuredPolicies(file: string): unknown[] | undefined {
-  try {
-    if (!existsSync(file)) return undefined;
-    const data: unknown = parse(readFileSync(file, "utf8"));
-    const auth = isRecord(data) ? data.auth : undefined;
-    return isRecord(auth) && Array.isArray(auth.accountPolicies) ? auth.accountPolicies : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** The overlay replaces the user's own list, so carry over their entries for providers omp-web is not steering. */
-export function withUserPolicies(policies: AccountPolicy[], userPolicies: unknown[]): unknown[] {
-  const steered = new Set(policies.map((policy) => policy.provider));
-  return [...userPolicies.filter((entry) => !(isRecord(entry) && typeof entry.provider === "string" && steered.has(entry.provider))), ...policies];
-}
-
-function writeOverlay(policies: unknown[]): string {
-  const content = stringify({ auth: { accountPolicies: policies } });
-  const dir = path.join(getAgentDir(), "omp-web-overlays");
-  // Content-addressed and never rewritten: omp re-reads overlays while running.
-  const file = path.join(dir, `account-policies-${createHash("sha256").update(content).digest("hex").slice(0, 16)}.yml`);
-  if (!existsSync(file)) {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeAtomic(file, content);
-  }
-  return file;
-}
-
-/** `--config <overlay>` steering this session's accounts, plus the signature it was built from. Never throws: on any failure omp chooses. */
-export async function accountRoutingSpawnArgs(sessionId: string, cwd: string, pinsOverride?: AccountPins): Promise<{ args: string[]; signature: string }> {
-  const signature = accountRoutingSignature(sessionId, pinsOverride);
-  const state = loadAccountRouting();
-  const pins = pinsOverride ?? state.sessions[sessionId] ?? {};
-  if (state.disabled.length === 0 && Object.keys(pins).length === 0) return { args: [], signature };
-  try {
-    const policies = buildAccountPolicies(await getProviderAccounts(), new Set(state.disabled), pins);
-    if (policies.length === 0) return { args: [], signature };
-    const user = configuredPolicies(path.join(cwd, ".omp", "config.yml")) ?? configuredPolicies(getSettingsPath()) ?? [];
-    return { args: ["--config", writeOverlay(withUserPolicies(policies, user))], signature };
-  } catch {
-    return { args: [], signature };
-  }
+  writePolicyJson(globalRequestPolicyPath(), globalRequestPolicy(state));
+  const file = path.join(getAgentDir(), "omp-web-routing", `${randomUUID()}.json`);
+  const binding = { sessionId, pins: pinsOverride, provider: providerOverride };
+  writeBinding(file, binding, state);
+  globalThis.__ompWebHardRouting!.bindings.set(file, binding);
+  return { file, env: { OMP_AUTH_REQUEST_POLICY_FILES: JSON.stringify([globalRequestPolicyPath(), file]) } };
 }
 
 /** omp's `credentialPinHash` (session/credential-pin.ts): the persisted id of the account that served a turn. */

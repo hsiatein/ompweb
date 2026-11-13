@@ -17,15 +17,16 @@ import {
   resolveSessionPath,
 } from "./session-reader";
 import { markShuttingDown, recordRunningSessions, RESUME_PROMPT, takeInterruptedSessions } from "./session-resume";
-import { prepareAskpassSpawn, withWebAskpassPrompt, type AskpassSessionIdentity } from "./askpass";
+import { AskpassSpawn, prepareAskpassSpawn, withWebAskpassPrompt, type AskpassSessionIdentity } from "./askpass";
 import { ompWebDefaultConfigArgs } from "./omp/web-defaults";
 import { ompBinaryFingerprint } from "./omp/omp-cli";
-import { accountRoutingSignature, accountRoutingSpawnArgs, setSessionAccountPins } from "./account-routing";
+import { accountRoutingSpawnArgs, bindAccountRoutingPolicy, releaseAccountRoutingPolicy, setSessionAccountPins, setSessionProviderPin } from "./account-routing";
 import type { AccountPins } from "./account-choices";
 import { dialogAttention, type AttentionItem } from "./attention";
 import { PRESET_FULL } from "./tool-presets";
 import { comparableProjectPath } from "./comparable-path";
 import { isRecord } from "./type-guards";
+import { parseSubagentLifecycle } from "./subagent-types";
 import { isReservedLaunchArg, loadProjectRegistry } from "./project-registry";
 import { allowFileRoot } from "./file-access";
 import type {
@@ -277,6 +278,8 @@ export class AgentSessionWrapper {
   private bashRunning = false;
   private streaming = false;
   private compacting = false;
+  /** Subagents this child reported started and not yet finished (`subagent_lifecycle`). */
+  private activeSubagents = new Set<string>();
   private streamId = randomUUID();
   private streamSequence = 0;
   private streamingMessage: Partial<AgentMessage> | null = null;
@@ -299,6 +302,8 @@ export class AgentSessionWrapper {
   private _alive = true;
   /** Host tools the web UI registered via set_host_tools (agent-callable). */
   private hostToolNames: Set<string> = new Set();
+  /** Their definitions, re-sent whenever the server tool set changes. */
+  private browserHostTools: Array<{ name?: unknown; [key: string]: unknown }> = [];
   /** host_tool_call ids awaiting a host_tool_result from the browser. */
   private pendingHostTools: Map<string, UnsequencedAgentEvent> = new Map();
   /** URI schemes the web UI registered via set_host_uri_schemes. */
@@ -323,18 +328,16 @@ export class AgentSessionWrapper {
    * or when the header lacks one. Used to detect a spawn fallback so a notice
    * can warn the user the agent is running in a different directory. */
   private readonly recordedCwd: string | null;
-  /** `accountRoutingSignature` the child was spawned with; a mismatch makes
-   * the next idle prompt restart it so changed account pins/disables apply. */
-  accountRoutingSpawned = "";
+  /** Live policy file owned by the current native process. */
+  accountRoutingPolicyFile: string | undefined;
   /** `ompBinaryFingerprint` at spawn; an `omp update` replaces the executable
    * (by rename, so this child keeps running), and the next idle prompt
    * restarts onto the new one. */
   ompBinarySpawned: string | null = null;
 
-  /** Whether the child was spawned with outdated account policies or omp binary. */
+  /** Binary replacement is applied at the next idle prompt; routing updates are live. */
   private spawnOutdated(): boolean {
-    return accountRoutingSignature(this._sessionId) !== this.accountRoutingSpawned
-      || ompBinaryFingerprint() !== this.ompBinarySpawned;
+    return ompBinaryFingerprint() !== this.ompBinarySpawned;
   }
 
   // Plain field assignments (not TS parameter properties) keep this module
@@ -365,6 +368,10 @@ export class AgentSessionWrapper {
     return this.isAlive() ? this.proc.pid : undefined;
   }
 
+  get accountProxyReady(): boolean {
+    return this.proc.accountProxyReady === true;
+  }
+
   /**
    * The memory guard (lib/memory-guard.ts) killed a command this session
    * started: tell the user in the chat and, mid-run, the agent through a
@@ -377,6 +384,20 @@ export class AgentSessionWrapper {
 
   isAlive(): boolean {
     return this._alive && this.proc.isAlive;
+  }
+
+  /** Push browser + current server tools again (the server tool set changed). */
+  async resendHostTools(): Promise<void> {
+    if (!this.isAlive()) return;
+    await this.proc.sendCommand(
+      { type: "set_host_tools", tools: [...this.browserHostTools, ...serverHostToolDefinitions()] },
+      GET_STATE_TIMEOUT_MS,
+    ).catch(() => {});
+  }
+
+  /** Subagents still working, which can outlive the main run (background tasks). */
+  get activeSubagentCount(): number {
+    return this.isAlive() ? this.activeSubagents.size : 0;
   }
 
   isRunning(): boolean {
@@ -466,6 +487,7 @@ export class AgentSessionWrapper {
       this.continuationGraceUntil = 0;
     }
     this._sessionId = state.sessionId;
+    if (this.accountRoutingPolicyFile) bindAccountRoutingPolicy(this.accountRoutingPolicyFile, state.sessionId);
     this._sessionFile = state.sessionFile ?? "";
     this._sessionName = state.sessionName;
     this.streaming = state.isStreaming;
@@ -563,6 +585,15 @@ export class AgentSessionWrapper {
         patchEstimatedTokensAfter(event.result);
         this.invalidateSessionLists();
         break;
+      case "subagent_lifecycle": {
+        const subagent = parseSubagentLifecycle(event.payload);
+        if (!subagent) break;
+        const before = this.activeSubagents.size;
+        if (subagent.status === "started") this.activeSubagents.add(subagent.id);
+        else this.activeSubagents.delete(subagent.id);
+        if (this.activeSubagents.size !== before) notifyRunningChange();
+        break;
+      }
       case "session_info_update":
         if (typeof event.title === "string") this._sessionName = event.title;
         this.invalidateSessionLists();
@@ -1226,28 +1257,40 @@ export class AgentSessionWrapper {
       this.bashRunning = false;
       this.streaming = false;
       this.compacting = false;
-      const askpass = await prepareAskpassSpawn(() => this.askpassIdentity());
-      if (!this._alive) {
-        askpass?.revoke();
-        return;
-      }
-      const routing = await accountRoutingSpawnArgs(this._sessionId, this.cwd);
-      this.accountRoutingSpawned = routing.signature;
+      const routing = await accountRoutingSpawnArgs(this._sessionId);
+      this.accountRoutingPolicyFile = routing.file;
       this.ompBinarySpawned = ompBinaryFingerprint();
-      const proc = new RpcProcess({
-        cwd: this.cwd,
-        extraArgs: withWebAskpassPrompt(
-          buildSessionSpawnArgs(resumable ? sessionFile : "", undefined, this.advisorSpawned, launchConfigForCwd(this.cwd), [...ompWebDefaultConfigArgs(this.cwd), ...routing.args]),
-          this.cwd,
-          askpass !== null,
-        ),
-        env: { ...askpass?.env, OMP_WEB_AGENT_INSTRUCTIONS_FILE: agentInstructionsPath() },
-        onExit: (info) => {
+      let askpass: AskpassSpawn | null = null;
+      let proc: RpcProcess;
+      try {
+        askpass = await prepareAskpassSpawn(() => this.askpassIdentity());
+        if (!this._alive) {
           askpass?.revoke();
-          if (this.proc === proc) this.handleProcessExit(info, proc);
-        },
-      });
+          releaseAccountRoutingPolicy(routing.file);
+          return;
+        }
+        proc = new RpcProcess({
+          cwd: this.cwd,
+          extraArgs: withWebAskpassPrompt(
+            buildSessionSpawnArgs(resumable ? sessionFile : "", undefined, this.advisorSpawned, launchConfigForCwd(this.cwd), ompWebDefaultConfigArgs(this.cwd)),
+            this.cwd,
+            askpass !== null,
+          ),
+          env: { ...askpass?.env, ...routing.env, OMP_WEB_AGENT_INSTRUCTIONS_FILE: agentInstructionsPath() },
+          onExit: (info) => {
+            askpass?.revoke();
+            releaseAccountRoutingPolicy(routing.file);
+            if (this.proc === proc) this.handleProcessExit(info, proc);
+          },
+        });
+      } catch (error) {
+        askpass?.revoke();
+        releaseAccountRoutingPolicy(routing.file);
+        throw error;
+      }
       this.proc = proc;
+      // A replacement child starts with no subagents; the old one's died with it.
+      if (this.activeSubagents.size > 0) { this.activeSubagents.clear(); notifyRunningChange(); }
       this.unsubscribeFrames = proc.onFrame((frame) => this.handleFrame(frame));
       try {
         const ready = await proc.waitReady(READY_TIMEOUT_MS);
@@ -1258,6 +1301,10 @@ export class AgentSessionWrapper {
         await proc.sendCommand({ type: "set_ask_dialog", enabled: true }, GET_STATE_TIMEOUT_MS).catch(() => {});
         const state = await proc.sendCommand<RpcSessionState>({ type: "get_state" }, GET_STATE_TIMEOUT_MS);
         this.applyIdentity(state);
+        const serverTools = serverHostToolDefinitions();
+        if (serverTools.length > 0) {
+          await proc.sendCommand({ type: "set_host_tools", tools: serverTools }, GET_STATE_TIMEOUT_MS);
+        }
         // Same fresh-spawn guard as startRpcSession: a sessionless wrapper
         // restarts bare, and omp's startup resume handling could land it on the
         // cwd's most recent session. An on-disk session file is the resume
@@ -1280,6 +1327,7 @@ export class AgentSessionWrapper {
       this.restarting = false;
     }
     notifyRunningChange();
+    this.emit({ type: "connected", sessionId: this._sessionId });
   }
 
   async send(command: Record<string, unknown>): Promise<unknown> {
@@ -1375,6 +1423,15 @@ export class AgentSessionWrapper {
         });
         return null;
       }
+
+      case "remove_queued_message":
+        if (typeof command.message !== "string") throw new Error("message must be a string");
+        if (command.queue !== "steering" && command.queue !== "followUp") throw new Error('queue must be "steering" or "followUp"');
+        return this.proc.sendCommand({ type, message: command.message, queue: command.queue });
+
+      case "promote_queued_message":
+        if (typeof command.message !== "string") throw new Error("message must be a string");
+        return this.proc.sendCommand({ type, message: command.message });
 
       case "abort":
         this.responseObserved = false;
@@ -1551,6 +1608,7 @@ export class AgentSessionWrapper {
         // Server tools are omp-web's own; a browser tool cannot shadow one.
         const valid = tools.filter((t) => typeof t.name === "string" && t.name && !getServerHostTools().has(t.name));
         this.hostToolNames = new Set(valid.map((t) => t.name as string));
+        this.browserHostTools = valid;
         // omp replaces the whole set, so server tools ride along every time.
         await this.proc.sendCommand({ type: "set_host_tools", tools: [...valid, ...serverHostToolDefinitions()] });
         return null;
@@ -1654,9 +1712,16 @@ export interface RunningRpcSession {
   cwd: string;
 }
 
+/** A session whose subagents are working, whether or not its main run is. */
+export interface SubagentActivity {
+  id: string;
+  count: number;
+}
+
 export interface RunningSessionUpdate {
   ids: string[];
   runningSessions: RunningRpcSession[];
+  subagentSessions: SubagentActivity[];
   exitedSessions: ExitedRpcSession[];
   /** Dialogs sessions are blocked on until the user answers. */
   attention: AttentionItem[];
@@ -1728,6 +1793,15 @@ export function getRunningRpcSessions(): RunningRpcSession[] {
   return [...map.entries()].map(([id, cwd]) => ({ id, cwd }));
 }
 
+export function getSubagentSessions(): SubagentActivity[] {
+  const map = new Map<string, number>();
+  for (const [sessionId, session] of getRegistry()) {
+    const count = session.activeSubagentCount;
+    if (count > 0) map.set(session.sessionId || sessionId, count);
+  }
+  return [...map.entries()].map(([id, count]) => ({ id, count }));
+}
+
 export function getRunningRpcSessionIds(): string[] {
   return getRunningRpcSessions().map((s) => s.id);
 }
@@ -1793,7 +1867,7 @@ export function subscribeRunningSessions(listener: (update: RunningSessionUpdate
 // Cross-session host tool calls
 //
 // A registered host tool called while no tab watches its session goes to every
-// open omp-web tab (over /api/agent/host-tools/events) instead of being rejected.
+// open omp-web tab (over the page-wide /api/events stream) instead of being rejected.
 // ----------------------------------------------------------------------------
 
 /** A tool omp-web itself answers (no browser involved). The handler gets the
@@ -1815,6 +1889,22 @@ function serverHostToolDefinitions(): ServerHostTool["definition"][] {
 /** Offer a server-answered tool to every omp child started from now on. */
 export function registerServerHostTool(tool: ServerHostTool): void {
   getServerHostTools().set(tool.definition.name, tool);
+}
+
+/** Whether a server tool name is taken (plugins must not replace omp-web's own tools). */
+export function hasServerHostTool(name: string): boolean {
+  return getServerHostTools().has(name);
+}
+
+export function unregisterServerHostTool(name: string): void {
+  getServerHostTools().delete(name);
+}
+
+/** Re-send the tool set to every live omp child after server tools changed
+ * (a web plugin was enabled or stopped). Children started later get the new
+ * set at spawn. */
+export async function refreshServerHostTools(): Promise<void> {
+  await Promise.all([...getRegistry().values()].map((session) => session.resendHostTools()));
 }
 
 function getHostToolListeners(): Set<(call: CrossSessionHostToolCall) => void> {
@@ -1846,13 +1936,14 @@ export function notifyRunningChange({ refreshSessionList = false }: { refreshSes
   const runningSessions = getRunningRpcSessions();
   const exitedSessions = getExitedRpcSessions();
   const attention = getAttentionItems();
+  const subagentSessions = getSubagentSessions();
   const ids = runningSessions.map((s) => s.id);
   const byId = (a: { id: string }, b: { id: string }) => a.id.localeCompare(b.id);
-  const snapshot = JSON.stringify([runningSessions.slice().sort(byId), exitedSessions.slice().sort(byId), attention.slice().sort(byId)]);
+  const snapshot = JSON.stringify([runningSessions.slice().sort(byId), exitedSessions.slice().sort(byId), attention.slice().sort(byId), subagentSessions.slice().sort(byId)]);
   if (snapshot === lastRunningSnapshot && !refreshSessionList) return;
   lastRunningSnapshot = snapshot;
   syncInterruptibleSessions();
-  const update: RunningSessionUpdate = { ids, runningSessions, exitedSessions, attention, refreshSessionList };
+  const update: RunningSessionUpdate = { ids, runningSessions, subagentSessions, exitedSessions, attention, refreshSessionList };
   for (const listener of getRunningListeners()) {
     try { listener(update); } catch { /* ignore listener errors */ }
   }
@@ -1910,6 +2001,7 @@ export interface NewSessionOptions {
   toolNames?: string[];
   advisor?: boolean;
   accountPins?: AccountPins;
+  providerPin?: string;
   provider?: string;
   modelId?: string;
   thinkingLevel?: string;
@@ -1927,7 +2019,7 @@ export async function spawnNewSession(options: NewSessionOptions): Promise<{ ses
   // that share a key onto one session. Date.now() (ms resolution) collides for
   // requests in the same millisecond, merging two new sessions into one.
   const tempKey = `__new__${randomUUID()}`;
-  const { session, realSessionId } = await startRpcSession(tempKey, "", options.cwd, options.toolNames, options.advisor === true, undefined, undefined, options.accountPins);
+  const { session, realSessionId } = await startRpcSession(tempKey, "", options.cwd, options.toolNames, options.advisor === true, undefined, undefined, options.accountPins, options.providerPin);
   // Keep the files-route allowed roots in sync so the new cwd is readable via
   // /api/files at once instead of 403ing for up to the cache TTL.
   allowFileRoot(options.cwd);
@@ -1981,6 +2073,7 @@ export async function startRpcSession(
   /** Account pins for a NEW session (its id is unknown until omp starts);
    * saved under the real id once it is. Existing sessions use stored pins. */
   accountPins?: AccountPins,
+  providerPin?: string,
 ): Promise<{ session: AgentSessionWrapper; realSessionId: string }> {
   const registry = getRegistry();
   const locks = getLocks();
@@ -2016,21 +2109,30 @@ export async function startRpcSession(
     // The wrapper needs the process and the process's onExit needs the wrapper;
     // the holder breaks that cycle (onExit only fires once the child dies).
     const holder: { wrapper?: AgentSessionWrapper } = {};
-    const askpass = await prepareAskpassSpawn(() => holder.wrapper?.askpassIdentity() ?? { sessionId, cwd });
-    const routing = await accountRoutingSpawnArgs(sessionId, cwd, accountPins);
-    const proc = new RpcProcess({
-      cwd,
-      extraArgs: withWebAskpassPrompt(
-        buildSessionSpawnArgs(sessionFile, toolNames, advisor === true, launchConfig, [...ompWebDefaultConfigArgs(cwd), ...routing.args]),
+    const routing = await accountRoutingSpawnArgs(sessionId, accountPins, providerPin);
+    let askpass: AskpassSpawn | null = null;
+    let proc: RpcProcess;
+    try {
+      askpass = await prepareAskpassSpawn(() => holder.wrapper?.askpassIdentity() ?? { sessionId, cwd });
+      proc = new RpcProcess({
         cwd,
-        askpass !== null,
-      ),
-      env: { ...askpass?.env, OMP_WEB_AGENT_INSTRUCTIONS_FILE: agentInstructionsPath() },
-      onExit: (info) => {
-        askpass?.revoke();
-        holder.wrapper?.handleProcessExit(info, proc);
-      },
-    });
+        extraArgs: withWebAskpassPrompt(
+          buildSessionSpawnArgs(sessionFile, toolNames, advisor === true, launchConfig, ompWebDefaultConfigArgs(cwd)),
+          cwd,
+          askpass !== null,
+        ),
+        env: { ...askpass?.env, ...routing.env, OMP_WEB_AGENT_INSTRUCTIONS_FILE: agentInstructionsPath() },
+        onExit: (info) => {
+          askpass?.revoke();
+          releaseAccountRoutingPolicy(routing.file);
+          holder.wrapper?.handleProcessExit(info, proc);
+        },
+      });
+    } catch (error) {
+      askpass?.revoke();
+      releaseAccountRoutingPolicy(routing.file);
+      throw error;
+    }
     const created = new AgentSessionWrapper(
       proc,
       cwd,
@@ -2039,7 +2141,7 @@ export async function startRpcSession(
       sessionFile ? sessionId : "",
     );
     holder.wrapper = created;
-    created.accountRoutingSpawned = routing.signature;
+    created.accountRoutingPolicyFile = routing.file;
     created.ompBinarySpawned = ompBinaryFingerprint();
     created.start();
     try {
@@ -2054,6 +2156,8 @@ export async function startRpcSession(
       if (!sessionFile && created.sessionFile && existsSync(created.sessionFile)) {
         await created.send({ type: "new_session" });
       }
+      if (accountPins && Object.keys(accountPins).length > 0) setSessionAccountPins(created.sessionId, accountPins);
+      if (providerPin) setSessionProviderPin(created.sessionId, providerPin);
     } catch (error) {
       // Await the child's full exit before the `finally` releases the startup
       // lock: a fire-and-forget destroy() would let a retry spawn a second
@@ -2064,7 +2168,6 @@ export async function startRpcSession(
     }
 
     const realSessionId = created.sessionId;
-    if (accountPins && Object.keys(accountPins).length > 0) setSessionAccountPins(realSessionId, accountPins);
     created.onDestroy(() => {
       if (registry.get(created.sessionId) === created) registry.delete(created.sessionId);
       if (registry.get(realSessionId) === created) registry.delete(realSessionId);

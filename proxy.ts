@@ -8,6 +8,8 @@ export function proxy(request: NextRequest) {
   // Scheduled task webhooks: the unguessable token in the path is the
   // credential (checked by the route), so external callers need no cookie.
   if (/^\/api\/hooks\/[A-Za-z0-9_-]{43}$/.test(request.nextUrl.pathname)) return NextResponse.next();
+  // Status board pushes from programs: same rule, one token per session.
+  if (/^\/api\/status\/[A-Za-z0-9_-]{43}$/.test(request.nextUrl.pathname)) return NextResponse.next();
   if (request.nextUrl.pathname.startsWith("/api/")) {
     return guardApiRequest(request) ?? NextResponse.next();
   }

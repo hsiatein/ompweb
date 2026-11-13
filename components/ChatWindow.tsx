@@ -2,11 +2,11 @@
 import { sendAgentCommand } from "@/lib/agent-client";
 import { registerAbortHandler } from "@/hooks/useKeyboardShortcuts";
 import { matchesShortcut } from "@/lib/keyboard-shortcuts";
-import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
+import { Fragment, memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type Ref } from "react";
 import { ArrowDown, ChevronDown, ChevronUp, Layers, Paperclip, Square } from "lucide-react";
 import type { AgentMessage, AssistantContentBlock, AssistantMessage, BashExecutionMessage, ExtensionUiRequest, SessionInfo, SessionTreeNode, ToolCallContent, ToolResultMessage } from "@/lib/types";
 import { translate, useI18n } from "@/lib/i18n";
-import { getDisplayableAssistantBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
+import { getDisplayableAssistantBlocks, interimAnswerBlocks, splitFinalAssistantBlocks } from "@/lib/message-display";
 import { isGroupAnchor, planTranscriptRows, type TranscriptRow } from "@/lib/chat-transcript-plan";
 import { resolveForkEntryIds } from "@/lib/chat-fork";
 import { MessageView } from "./MessageView";
@@ -188,7 +188,12 @@ export function OmpRuntimeVersion() {
   );
 }
 
-function ProcessDetailsGroup({ messageCount, toolCallCount, children }: { messageCount: number; toolCallCount: number; children: () => ReactNode }) {
+/**
+ * Collapsed tool calls and thinking of a finished turn. `collapsedContent` (the reply
+ * text written between tool calls) shows only while collapsed; expanded, the same text
+ * appears in place inside `children`.
+ */
+function ProcessDetailsGroup({ messageCount, toolCallCount, children, collapsedContent }: { messageCount: number; toolCallCount: number; children: () => ReactNode; collapsedContent?: () => ReactNode }) {
   const { t, tn } = useI18n();
   const [expanded, setExpanded] = useState(false);
   const parts = [t("chatWindow.processDetails"), tn("chatWindow.messageCount", messageCount)];
@@ -223,11 +228,11 @@ function ProcessDetailsGroup({ messageCount, toolCallCount, children }: { messag
           {parts.join(" · ")}
         </span>
       </button>
-      {expanded && (
+      {expanded ? (
         <div style={{ marginTop: 3 }}>
           {children()}
         </div>
-      )}
+      ) : collapsedContent?.()}
     </div>
   );
 }
@@ -378,6 +383,8 @@ interface CommittedTranscriptProps {
   nearBottom: boolean;
   sentinelRef: React.RefObject<HTMLButtonElement | null>;
   handleLoadMoreClick: () => void;
+  /** Receives how many rows the render window currently spans. */
+  renderedRowCountRef: React.RefObject<number>;
 }
 
 /**
@@ -389,7 +396,7 @@ interface CommittedTranscriptProps {
 const CommittedTranscript = memo(function CommittedTranscript({
   messages, entryIds, conversationMeta, messageRefs, isStreaming, sessionBusy, isNew, forkingEntryId,
   handleFork, handleEditFromHere, modelNames, messageCwd, onOpenFile, sessionId,
-  toolCallsDefaultCollapsed, visibleCount, nearBottom, sentinelRef, handleLoadMoreClick,
+  toolCallsDefaultCollapsed, visibleCount, nearBottom, sentinelRef, handleLoadMoreClick, renderedRowCountRef,
 }: CommittedTranscriptProps) {
   const { t } = useI18n();
   const { toolResultsMap, lastAnchorIdx, visibleRefIndexByMessage } = conversationMeta;
@@ -404,7 +411,7 @@ const CommittedTranscript = memo(function CommittedTranscript({
     messageRefs.current[refIndex] = el;
   };
 
-  const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean } = {}): ReactNode => {
+  const renderMessage = (idx: number, options: { attachRef?: boolean; keyPrefix?: string; messageOverride?: AgentMessage; showTimestamp?: boolean; noActions?: boolean } = {}): ReactNode => {
     const msg = options.messageOverride ?? messages[idx];
     const isVisible = msg.role === "user" || msg.role === "assistant";
     const currentRefIdx = visibleRefIndexByMessage.get(idx);
@@ -425,7 +432,8 @@ const CommittedTranscript = memo(function CommittedTranscript({
     if (options.showTimestamp !== undefined) showTimestamp = options.showTimestamp;
     // Forking needs a branch point omp accepts, and a first user prompt has no
     // earlier context to fork from — that one row keeps no fork action.
-    const canOfferFork = !sessionBusy && !isNew && !!forkEntryIds[idx] && !(idx === 0 && msg.role === "user");
+    // A merged view (interim notes of several messages) has no single entry to fork from.
+    const canOfferFork = !options.noActions && !sessionBusy && !isNew && !!forkEntryIds[idx] && !(idx === 0 && msg.role === "user");
     const view = (
       <MessageView
         key={`${keyPrefix}-view-${idx}`}
@@ -445,9 +453,13 @@ const CommittedTranscript = memo(function CommittedTranscript({
         toolCallsDefaultCollapsed={toolCallsDefaultCollapsed}
       />
     );
+    if (msg.role === "custom" && msg.customType === "compaction" && options.attachRef !== false) {
+      // Anchor for keeping the reading position across the pre-compaction toggle.
+      return <div key={`${keyPrefix}-${idx}`} data-entry-id={entryIds[idx]}>{view}</div>;
+    }
     if (!isVisible || options.attachRef === false || currentRefIdx === undefined) return view;
     return (
-      <div key={`${keyPrefix}-${idx}`} data-message-index={idx} ref={attachVisibleRef(idx, currentRefIdx)}>
+      <div key={`${keyPrefix}-${idx}`} data-message-index={idx} data-entry-id={entryIds[idx]} ref={attachVisibleRef(idx, currentRefIdx)}>
         {view}
       </div>
     );
@@ -470,17 +482,27 @@ const CommittedTranscript = memo(function CommittedTranscript({
   // window's top at the last end-anchored position and let the appended tail
   // grow into the window; returning to the bottom re-engages the end anchor.
   const anchorStartIndexRef = useRef<number | null>(null);
+  const windowFirstEntryRef = useRef<string | undefined>(undefined);
+  const firstEntryId = entryIds[0];
   const { startIndex, hasMore } = useMemo(() => {
     const total = rows.length;
     const endAnchored = Math.max(0, total - visibleCount);
+    // Another first entry means another history view (pre-compaction toggle,
+    // compaction): the anchored row index no longer refers to the same rows.
+    if (windowFirstEntryRef.current !== firstEntryId) {
+      windowFirstEntryRef.current = firstEntryId;
+      anchorStartIndexRef.current = null;
+    }
     if (nearBottom || anchorStartIndexRef.current === null) {
       anchorStartIndexRef.current = endAnchored;
+      renderedRowCountRef.current = total - endAnchored;
       return { startIndex: endAnchored, hasMore: endAnchored > 0 };
     }
     const anchored = Math.min(anchorStartIndexRef.current, endAnchored);
     anchorStartIndexRef.current = anchored;
+    renderedRowCountRef.current = total - anchored;
     return { startIndex: anchored, hasMore: anchored > 0 };
-  }, [rows.length, visibleCount, nearBottom]);
+  }, [rows.length, visibleCount, nearBottom, firstEntryId, renderedRowCountRef]);
 
   const rendered: ReactNode[] = [];
   for (let rowIdx = startIndex; rowIdx < rows.length; rowIdx++) {
@@ -513,12 +535,20 @@ const CommittedTranscript = memo(function CommittedTranscript({
     const finalAnswerMessage = hasFinalAnswer
       ? withAssistantBlocks(finalAssistant, finalSplit.answerBlocks)
       : null;
+    const interimBlocks = interimAnswerBlocks(messages, processIndices, finalSplit.processBlocks);
+    const interimSourceIdx = processIndices.find((processIdx) => messages[processIdx]?.role === "assistant") ?? finalAssistantIdx;
+    const interimMessage = interimBlocks.length > 0
+      ? withAssistantBlocks(messages[interimSourceIdx] as AssistantMessage, interimBlocks, { omitUsage: true })
+      : null;
 
     if (processCount > 0) {
       const processGroup = (
         <ProcessDetailsGroup
           messageCount={processCount}
           toolCallCount={groupToolCallCount}
+          collapsedContent={interimMessage
+            ? () => renderMessage(interimSourceIdx, { messageOverride: interimMessage, attachRef: false, keyPrefix: "interim", showTimestamp: false, noActions: true })
+            : undefined}
         >
           {() => renderClusteredProcessMessages(
             messages,
@@ -605,6 +635,8 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     subagents, subagentEvents, subagentTranscriptVersions, activeSubagentCount, currentTodoPhase, todoPhases,
     isNew,
     pendingAccountPins, setPendingAccountPins,
+    pendingProviderPin, setPendingProviderPin,
+    routingSessionId, routingInitializing,
     sessionIdRef, messagesEndRef, scrollContainerRef,
     handleSend, handleAbort, handleFork, handleEditFromHere, handleModelChange, retrySession,
     handleSteer, handleFollowUp, handlePromptWithStreamingBehavior, handleAbortCompaction, handleCompact,
@@ -813,6 +845,56 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
     loadMoreModeRef.current = "click";
     setVisibleCount((prev) => getNextVisibleCount(prev));
   }, [scrollContainerRef]);
+
+  // Switching between the compacted and the full history replaces the whole
+  // transcript. Keep the messages the user was reading at the same place on
+  // screen: remember the visible messages and their offsets, keep the same
+  // tail of rows rendered, and scroll the first one still present back into
+  // position once the other view has arrived.
+  const renderedRowCountRef = useRef(0);
+  const compactionToggleAnchorRef = useRef<{
+    show: boolean;
+    firstEntryId: string | undefined;
+    candidates: { entryId: string; offset: number }[];
+  } | null>(null);
+  const handleTogglePreCompactionHistory = useCallback(() => {
+    const container = scrollContainerRef.current;
+    const candidates: { entryId: string; offset: number }[] = [];
+    if (container) {
+      // The viewport may show only rows without an anchor (folded process
+      // details), so consider every rendered anchor and prefer the ones
+      // nearest the top of the viewport.
+      const top = container.getBoundingClientRect().top;
+      for (const element of container.querySelectorAll<HTMLElement>("[data-entry-id]")) {
+        const entryId = element.dataset.entryId;
+        if (entryId) candidates.push({ entryId, offset: element.getBoundingClientRect().top - top });
+      }
+      candidates.sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
+    }
+    compactionToggleAnchorRef.current = { show: !showPreCompactionHistory, firstEntryId: entryIds[0], candidates };
+    // The compaction summary changes position between the two views, so keep
+    // a couple of extra rows: every message on screen stays rendered.
+    setVisibleCount((prev) => Math.max(prev, renderedRowCountRef.current + 2));
+    togglePreCompactionHistory();
+  }, [entryIds, showPreCompactionHistory, togglePreCompactionHistory, scrollContainerRef]);
+  useLayoutEffect(() => {
+    const anchor = compactionToggleAnchorRef.current;
+    if (!anchor || anchor.show !== showPreCompactionHistory || anchor.firstEntryId === entryIds[0]) return;
+    compactionToggleAnchorRef.current = null;
+    const container = scrollContainerRef.current;
+    if (!container) return;
+    const top = container.getBoundingClientRect().top;
+    const elements = new Map<string, HTMLElement>();
+    for (const element of container.querySelectorAll<HTMLElement>("[data-entry-id]")) {
+      if (element.dataset.entryId) elements.set(element.dataset.entryId, element);
+    }
+    for (const candidate of anchor.candidates) {
+      const element = elements.get(candidate.entryId);
+      if (!element) continue;
+      container.scrollTop += element.getBoundingClientRect().top - top - candidate.offset;
+      return;
+    }
+  }, [entryIds, showPreCompactionHistory, scrollContainerRef]);
 
   // `messages` gets a new identity on every update; publish only real changes.
   const lastSpeedSample = generationSpeed?.samples.at(-1);
@@ -1075,9 +1157,12 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
       fastModeActive={fastModeActive}
       fastModeSupported={Boolean(displayModelValue && modelList.some((entry) => entry.provider === displayModelValue.provider && entry.id === displayModelValue.modelId && entry.supportsFastMode))}
       onFastModeChange={session || isNew ? handleFastModeChange : undefined}
-      accountSessionId={session?.id ?? null}
+      accountSessionId={routingSessionId}
+      accountRoutingBusy={routingInitializing}
       pendingAccountPins={pendingAccountPins}
       onPendingAccountPinsChange={session || isNew ? setPendingAccountPins : undefined}
+      pendingProviderPin={pendingProviderPin}
+      onPendingProviderPinChange={setPendingProviderPin}
       onAbortRetry={session ? handleAbortRetry : undefined}
       availableThinkingLevels={availableThinkingLevels}
       thinkingLevelMap={currentThinkingLevelMap}
@@ -1115,6 +1200,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
       onMinimize={isEmptyNew ? undefined : handleMinimize}
       statusText={composerStatusText}
       onOpenProviders={onOpenProviders}
+      continuePrompt={session && messages.length > 0 ? t("chatInput.continuePrompt") : undefined}
     />
   );
 
@@ -1276,7 +1362,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
                 </span>
                 <button
                   type="button"
-                  onClick={togglePreCompactionHistory}
+                  onClick={handleTogglePreCompactionHistory}
                   style={{
                     flexShrink: 0, padding: "4px 8px", borderRadius: 6, border: "1px solid var(--border)",
                     background: "var(--bg)", color: "var(--text)", cursor: "pointer", fontSize: 12,
@@ -1306,6 +1392,7 @@ export function ChatWindow({ session, newSessionCwd, newSessionWorkspace, toolCa
               nearBottom={nearBottom}
               sentinelRef={sentinelRef}
               handleLoadMoreClick={handleLoadMoreClick}
+              renderedRowCountRef={renderedRowCountRef}
             />
             {streamState.isStreaming && streamState.streamingMessage && (
               <MessageView

@@ -5,7 +5,7 @@ import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { ShaderPass } from "three/addons/postprocessing/ShaderPass.js";
 import { CopyShader } from "three/addons/shaders/CopyShader.js";
-import type { BrowserScene, SceneLayer, SceneParticles, SceneTexture, SceneValues, SceneSoundCommand } from "./wallpaper-scene-types";
+import type { BrowserScene, SceneForm, SceneLayer, SceneParticles, SceneTexture, SceneValues, SceneSoundCommand } from "./wallpaper-scene-types";
 import { sceneOutputSize } from "./wallpaper-scene-resolution";
 import { sceneLayerOrigin } from "./wallpaper-scene-transform";
 import { sceneTargetPlan } from "./wallpaper-scene-targets";
@@ -392,6 +392,7 @@ export class BrowserSceneRenderer {
   private spectrum = Array<number>(128).fill(0);
   private audioRequired = false;
   private scriptStates = new Map<number, ScriptLayerState>();
+  private form?: SceneForm;
   private scriptUniforms = new Map<number, Record<string, T.IUniform>[]>();
   private fonts: LoadedSceneFont[] = [];
   private textLayers: import("./wallpaper-scene-text").SceneTextTexture[] = [];
@@ -538,7 +539,7 @@ gl_FragColor=vec4(max(vec3(0.0),2.0*c-gray)*excess,1.0);}`;
   };
   private contextLost = (e: Event) => { e.preventDefault(); this.paused = true; this.onError("WebGL context lost. Reselect the wallpaper to reload."); };
   private visibility = () => { this.last = 0; this.setPaused(this.paused); };
-  static async create(canvas: HTMLCanvasElement, data: BrowserScene, signal: AbortSignal, onError: (e: string) => void) {
+  static async create(canvas: HTMLCanvasElement, data: BrowserScene, signal: AbortSignal, onError: (e: string) => void, form = "") {
     const result = new BrowserSceneRenderer(canvas, data, onError);
     const aborted = () => result.resourceAbort.abort();
     signal.addEventListener("abort", aborted, { once: true });
@@ -601,6 +602,7 @@ gl_FragColor=vec4(max(vec3(0.0),2.0*c-gray)*excess,1.0);}`;
         result.propertyScripts = await ScenePropertyScripts.create(data, Date.now(), result.scriptBonePoses(), true);
         signal.throwIfAborted();
       }
+      result.setForm(form);
       // Scripts decide the active time-of-day layer before any video downloads.
       result.updatePropertyScripts(0); result.updateLayerTransforms(0);
       const needed = result.neededVideoTextures();
@@ -852,7 +854,7 @@ if(u_BlendMode==6.0`) : fragment;
         if (state.boneCommands?.length) skin.animation.applyPhysicsCommands(state.boneCommands, mesh.matrixWorld);
         skin.positions.needsUpdate = true;
       }
-      mesh.visible = state.visible;
+      mesh.visible = this.form?.visibility[layer.id] ?? state.visible;
       mesh.renderOrder = order;
       mesh.rotation.z = state.angles[2] * Math.PI / 180;
       mesh.scale.set(state.scale[0], state.scale[1], 1);
@@ -916,6 +918,19 @@ if(u_BlendMode==6.0`) : fragment;
       }
     }
     return waiting;
+  }
+  setForm(id: string) {
+    this.form = this.data.forms?.find(form => form.id === id);
+    for (const { layer, mesh } of this.scriptLayers.values()) {
+      mesh.visible = this.form?.visibility[layer.id] ?? this.scriptStates.get(layer.id)?.visible ?? layer.visible !== false;
+    }
+    for (const material of this.materials) {
+      const uniform = material.uniforms.u_OmpXrayMode;
+      if (uniform) uniform.value = this.form?.xray ?? -1;
+    }
+    this.cursorEvents.length = 0;
+    this.pointerRelease();
+    this.dirty = true; this.schedule();
   }
   setAudio(audio: WallpaperAudio) { this.audio = audio; for (const command of this.pendingSoundCommands.splice(0)) audio.command(command); }
   setPaused(paused: boolean) {
@@ -1021,7 +1036,8 @@ if(u_BlendMode==6.0`) : fragment;
     if (this.data.layers.some(l => l.parent !== undefined)) {
       const locals = [...this.scriptLayers.values()].map(({ layer }) => {
         const state = this.scriptStates.get(layer.id);
-        return state ? { ...layer, origin: state.origin, angle: state.angles[2] * Math.PI / 180, scale: state.scale, visible: state.visible, parallax: state.parallaxDepth, alignment: state.alignment } : layer;
+        const visible = this.form?.visibility[layer.id] ?? state?.visible ?? layer.visible !== false;
+        return state ? { ...layer, origin: state.origin, angle: state.angles[2] * Math.PI / 180, scale: state.scale, visible, parallax: state.parallaxDepth, alignment: state.alignment } : visible === (layer.visible !== false) ? layer : { ...layer, visible };
       });
       const worlds = sceneWorldTransforms(locals, (id, name) => {
         const skin = this.skins.find(s => s.id === id);

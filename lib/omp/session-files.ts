@@ -22,6 +22,7 @@ import * as fsRuntime from "fs";
 import * as path from "path";
 import { StringDecoder } from "string_decoder";
 import { gunzipSync, gzipSync } from "zlib";
+import { skillPromptUserText } from "../skill-prompt";
 import { isRecord } from "../type-guards";
 
 // Keep user-session directory traversal out of Next's static NFT globbing.
@@ -646,6 +647,10 @@ export interface OmpSessionInfo {
 
 const SESSION_LIST_PREFIX_BYTES = 4096;
 const SESSION_LIST_SUFFIX_BYTES = 32_768;
+/** Re-read window when the first user message is not in the 4 KiB prefix:
+ * omp writes model/thinking changes and tool-inventory notices (several KiB
+ * each) before the first prompt, which push it ~20 KiB in. */
+const SESSION_LIST_EXTENDED_PREFIX_BYTES = 65_536;
 
 function decodeJsonStringFragment(value: string): string {
   const safeValue = value.endsWith("\\") ? value.slice(0, -1) : value;
@@ -881,39 +886,54 @@ function readTextSlices(filePath: string, prefixBytes: number, suffixBytes: numb
   }
 }
 
+/** Header, message count and first user message found in a prefix window. */
+function summarizeListPrefix(content: string) {
+  const entries = parseJsonlLenient<Record<string, unknown>>(content);
+  const header = parseSessionListHeader(content, entries);
+  if (!header) return undefined;
+  let parsedMessageCount = 0;
+  let firstMessage = "";
+  let shortSummary: string | undefined;
+  for (let i = 1; i < entries.length; i++) {
+    const entry = entries[i] as { type?: string; message?: { role?: string; content?: unknown }; shortSummary?: string; customType?: unknown; details?: unknown; attribution?: unknown };
+    if (entry.type === "compaction" && typeof entry.shortSummary === "string") {
+      shortSummary = entry.shortSummary;
+    }
+    if (entry.type === "custom_message" && !firstMessage) {
+      firstMessage = skillPromptUserText(entry.customType, entry.details, entry.attribution) ?? "";
+    }
+    if (entry.type === "message" && entry.message) {
+      parsedMessageCount++;
+      if (entry.message.role === "user" && !firstMessage) {
+        firstMessage = extractTextFromContent(entry.message.content);
+      }
+    }
+  }
+  firstMessage ||= extractFirstDisplayMessageFromPrefix(content) ?? "";
+  return { header, parsedMessageCount, firstMessage, shortSummary };
+}
+
 /**
- * Scan a single session file into an OmpSessionInfo using only a 4 KiB prefix
- * window (plus a 32 KiB tail window when `withStatus` is set). Faithful port
- * of omp's scanSessionFile — messageCount is a prefix-derived lower bound.
+ * Scan a single session file into an OmpSessionInfo using a 4 KiB prefix
+ * window (64 KiB when the first user message is not in it) plus a 32 KiB tail
+ * window when `withStatus` is set. Port of omp's scanSessionFile —
+ * messageCount is a prefix-derived lower bound.
  */
 export function scanSessionInfo(filePath: string, withStatus = true): OmpSessionInfo | undefined {
   try {
-    const [content, suffix, size, mtime] = readTextSlices(
+    const [prefix, suffix, size, mtime] = readTextSlices(
       filePath,
       SESSION_LIST_PREFIX_BYTES,
       withStatus ? SESSION_LIST_SUFFIX_BYTES : 0,
     );
-    const entries = parseJsonlLenient<Record<string, unknown>>(content);
-    const header = parseSessionListHeader(content, entries);
-    if (!header) return undefined;
-
-    let parsedMessageCount = 0;
-    let firstMessage = "";
-    let shortSummary: string | undefined;
-    for (let i = 1; i < entries.length; i++) {
-      const entry = entries[i] as { type?: string; message?: { role?: string; content?: unknown }; shortSummary?: string };
-      if (entry.type === "compaction" && typeof entry.shortSummary === "string") {
-        shortSummary = entry.shortSummary;
-      }
-      if (entry.type === "message" && entry.message) {
-        parsedMessageCount++;
-        if (entry.message.role === "user" && !firstMessage) {
-          firstMessage = extractTextFromContent(entry.message.content);
-        }
-      }
+    let content = prefix;
+    let summary = summarizeListPrefix(content);
+    if (!summary) return undefined;
+    if (!summary.firstMessage && size > SESSION_LIST_PREFIX_BYTES) {
+      [content] = readTextSlices(filePath, SESSION_LIST_EXTENDED_PREFIX_BYTES, 0);
+      summary = summarizeListPrefix(content) ?? summary;
     }
-
-    firstMessage ||= extractFirstDisplayMessageFromPrefix(content) ?? "";
+    const { header, parsedMessageCount, firstMessage, shortSummary } = summary;
     const messageCount = Math.max(parsedMessageCount, countMessageMarkers(content));
     return {
       path: filePath,

@@ -99,6 +99,11 @@ export function disposeUtilityRpc(): void {
   if (proc) void proc.dispose();
 }
 
+export function utilitySupportsAccountProxy(): boolean {
+  const proc = globalThis.__ompUtilityRpcState?.proc;
+  return !proc?.isAlive || proc.accountProxyReady === true;
+}
+
 function scheduleIdleKill(state: UtilityRpcState): void {
   if (state.idleTimer) clearTimeout(state.idleTimer);
   state.idleTimer = setTimeout(() => {
@@ -135,6 +140,10 @@ export function runUtilityCommand<T = unknown>(
       state.idleTimer = null;
     }
     try {
+      if (state.proc?.isAlive && state.proc.accountProxyReady !== true) {
+        await state.proc.dispose();
+        state.proc = null;
+      }
       if (!state.proc || !state.proc.isAlive) {
         state.proc = await startProcess(state);
       }

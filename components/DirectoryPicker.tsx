@@ -193,6 +193,7 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
     onSelect(currentPath, { profile: profile.trim() || undefined, advisor: advisor || undefined, extraArgs: args.length ? args : undefined });
   };
   const currentIsFavorite = Boolean(currentPath) && favorites.includes(currentPath);
+  const canToggleFavorite = Boolean(currentPath) && !hasUncommittedPath && !loading && (currentIsFavorite || favorites.length < MAX_FAVORITES);
   const launchOptionCount = Number(Boolean(profile.trim())) + Number(advisor) + Number(Boolean(extraArgs.trim()));
 
   if (!portalTarget) return null;
@@ -271,6 +272,18 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
             style={{ width: 36, height: 36, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "1px solid var(--border)", borderRadius: 6, background: newFolderName !== null ? "var(--bg-selected)" : "var(--bg-hover)", color: newFolderName !== null ? "var(--text)" : "var(--text-muted)", cursor: canCreateFolder ? "pointer" : "default", opacity: canCreateFolder ? 1 : 0.45, transition: "background-color var(--dur-fast) var(--ease-out-warm), color var(--dur-fast) var(--ease-out-warm), opacity var(--dur-fast) var(--ease-out-warm)" }}
           >
             <FolderPlus size={16} strokeWidth={1.8} aria-hidden="true" />
+          </button>
+          <button
+            className="directory-picker-icon-button"
+            type="button"
+            onClick={() => saveFavorites(currentIsFavorite ? favorites.filter((entry) => entry !== currentPath) : [...favorites, currentPath])}
+            disabled={!canToggleFavorite}
+            aria-pressed={currentIsFavorite}
+            title={currentIsFavorite ? t("directoryPicker.unfavoriteCurrent") : t("directoryPicker.favoriteCurrent")}
+            aria-label={currentIsFavorite ? t("directoryPicker.unfavoriteCurrent") : t("directoryPicker.favoriteCurrent")}
+            style={{ width: 36, height: 36, padding: 0, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, border: "1px solid var(--border)", borderRadius: 6, background: "var(--bg-hover)", color: currentIsFavorite ? "var(--accent)" : "var(--text-muted)", cursor: canToggleFavorite ? "pointer" : "default", opacity: canToggleFavorite ? 1 : 0.45 }}
+          >
+            <Star size={16} strokeWidth={1.8} aria-hidden="true" fill={currentIsFavorite ? "currentColor" : "none"} />
           </button>
         </form>
 
@@ -374,7 +387,7 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
           </summary>
           <div className="directory-picker-section-body">
             {favorites.length === 0 ? (
-              <p className="directory-picker-section-empty">{t("directoryPicker.favoritesEmpty")}</p>
+              <p className="directory-picker-section-empty">{t("directoryPicker.favoritesNone")}</p>
             ) : (
               <ul className="directory-picker-favorites">
                 {favorites.map((path) => (
@@ -390,15 +403,6 @@ export function DirectoryPicker({ onCancel, onSelect, busy = false, error }: Pro
                 ))}
               </ul>
             )}
-            <button
-              className="directory-picker-action directory-picker-favorite-toggle"
-              type="button"
-              onClick={() => saveFavorites(currentIsFavorite ? favorites.filter((entry) => entry !== currentPath) : [...favorites, currentPath])}
-              disabled={!currentPath || hasUncommittedPath || (!currentIsFavorite && favorites.length >= MAX_FAVORITES)}
-            >
-              <Star size={13} aria-hidden="true" fill={currentIsFavorite ? "currentColor" : "none"} />
-              {currentIsFavorite ? t("directoryPicker.unfavoriteCurrent") : t("directoryPicker.favoriteCurrent")}
-            </button>
           </div>
         </details>
 

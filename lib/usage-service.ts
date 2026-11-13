@@ -162,8 +162,10 @@ export function computeTimeRangeBounds(
 /**
  * Parse an individual session .jsonl file and extract all Assistant usage records.
  * Uses mtime + file size cache to avoid disk reading on subsequent requests.
+ * A subagent transcript passes its top-level session's id as `ownerSessionId`
+ * so its usage counts toward that session (and not as a session of its own).
  */
-export function parseSessionUsage(filePath: string, customModelsConfig = readModelsConfig()): UsageRecord[] {
+export function parseSessionUsage(filePath: string, customModelsConfig = readModelsConfig(), ownerSessionId?: string): UsageRecord[] {
   let stats;
   try {
     stats = statSync(filePath);
@@ -178,7 +180,7 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
     return cached.records;
   }
 
-  let sessionId = basename(filePath, ".jsonl");
+  let sessionId = ownerSessionId ?? basename(filePath, ".jsonl");
   let sessionCwd = "";
   let sessionTimestamp = stats.mtimeMs;
   let activeProvider = "";
@@ -199,7 +201,7 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
       const type = parsed.type;
 
       if (type === "session") {
-        if (typeof parsed.id === "string") sessionId = parsed.id;
+        if (typeof parsed.id === "string" && !ownerSessionId) sessionId = parsed.id;
         if (typeof parsed.cwd === "string") sessionCwd = parsed.cwd;
         if (typeof parsed.timestamp === "string") {
           const t = new Date(parsed.timestamp).getTime();
@@ -260,6 +262,14 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
             const { cost, quality } = calculateUsageCost(rawUsage, rates);
             const cacheSavings = calculateCacheSavings(rawUsage, rates);
 
+            // Same rule as lib/generation-speed.ts: omp ignores requests under 100 ms as unmeasurable.
+            const durationMs = typeof msg.duration === "number" && Number.isFinite(msg.duration) && msg.duration >= 100 && output > 0
+              ? Math.round(msg.duration)
+              : null;
+            const ttftMs = durationMs !== null && typeof msg.ttft === "number" && Number.isFinite(msg.ttft) && msg.ttft >= 0
+              ? Math.round(msg.ttft)
+              : null;
+
             if (totalTokens > 0 || cost > 0) {
               records.push({
                 timestamp,
@@ -276,69 +286,9 @@ export function parseSessionUsage(filePath: string, customModelsConfig = readMod
                 cost,
                 cacheSavings,
                 costQuality: quality,
+                durationMs,
+                ttftMs,
               });
-            }
-          }
-        } else if (role === "toolResult" && msg.toolName === "task" && isRecord(msg.details)) {
-          // Subagent task dispatches may carry usage results
-          const results = Array.isArray(msg.details.results) ? msg.details.results : [];
-          for (const res of results) {
-            if (isRecord(res) && isRecord(res.usage)) {
-              const u = res.usage;
-              const subModel = typeof res.resolvedModel === "string"
-                ? res.resolvedModel
-                : typeof res.model === "string"
-                  ? res.model
-                  : activeModel || "unknown";
-              const subProvider = typeof res.provider === "string" && res.provider
-                ? res.provider
-                : subModel.includes("/")
-                  ? subModel.split("/")[0]
-                  : activeProvider || "unknown";
-
-              const input = typeof u.input === "number" ? u.input : 0;
-              const output = typeof u.output === "number" ? u.output : 0;
-              const reasoning = typeof u.reasoning === "number"
-                ? u.reasoning
-                : typeof u.reasoningTokens === "number"
-                  ? u.reasoningTokens
-                  : typeof u.thoughtTokens === "number"
-                    ? u.thoughtTokens
-                    : 0;
-              const cacheRead = typeof u.cacheRead === "number" ? u.cacheRead : 0;
-              const cacheWrite = typeof u.cacheWrite === "number" ? u.cacheWrite : 0;
-              const totalTokens = typeof u.totalTokens === "number" ? u.totalTokens : input + output + cacheRead + cacheWrite;
-
-              let timestamp = sessionTimestamp;
-              if (typeof msg.timestamp === "number" && !isNaN(msg.timestamp)) {
-                timestamp = msg.timestamp;
-              } else if (typeof parsed.timestamp === "string") {
-                const parsedTime = new Date(parsed.timestamp).getTime();
-                if (!isNaN(parsedTime)) timestamp = parsedTime;
-              }
-
-              const rates = resolveModelRates(subProvider, subModel, customModelsConfig);
-              const { cost, quality } = calculateUsageCost(u, rates);
-              const cacheSavings = calculateCacheSavings(u, rates);
-
-              if (totalTokens > 0 || cost > 0) {
-                records.push({
-                  timestamp,
-                  sessionId,
-                  sessionCwd,
-                  provider: subProvider,
-                  model: subModel,
-                  input,
-                  output,
-                  reasoning,
-                  cacheRead,
-                  cacheWrite,
-                  totalTokens,
-                  cost,
-                  cacheSavings,
-                  costQuality: quality,
-                });
-              }
             }
           }
         }

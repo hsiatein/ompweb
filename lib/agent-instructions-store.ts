@@ -5,7 +5,7 @@ import { getAgentDir } from "./omp/paths";
 import {
   AgentInstructionValidationError, MAX_AGENT_INSTRUCTION_RULES,
   parseAgentInstructionRule, sameInstructionTarget,
-  type AgentInstructionRule, type AgentInstructionTarget,
+  type AgentInstructionCombine, type AgentInstructionRule, type AgentInstructionTarget,
 } from "./agent-instructions";
 
 export function agentInstructionsPath(): string {
@@ -37,7 +37,11 @@ export function loadAgentInstructions(file = agentInstructionsPath()): AgentInst
 }
 
 /** Update one scope, retaining other editors' scopes. null deletes; empty text overrides. */
-export function saveAgentInstruction(target: AgentInstructionTarget, text: string | null): AgentInstructionRule[] {
+export function saveAgentInstruction(
+  target: AgentInstructionTarget,
+  text: string | null,
+  combine: AgentInstructionCombine = "replace",
+): AgentInstructionRule[] {
   const file = agentInstructionsPath();
   const rules = loadAgentInstructions(file);
   const index = rules.findIndex((rule) => sameInstructionTarget(rule, target));
@@ -45,7 +49,7 @@ export function saveAgentInstruction(target: AgentInstructionTarget, text: strin
     if (index < 0) return rules;
     rules.splice(index, 1);
   } else {
-    const rule = parseAgentInstructionRule({ ...target, text });
+    const rule = parseAgentInstructionRule({ ...target, text, combine });
     if (index >= 0) rules[index] = rule;
     else {
       if (rules.length >= MAX_AGENT_INSTRUCTION_RULES) throw new AgentInstructionValidationError("Too many instruction rules");

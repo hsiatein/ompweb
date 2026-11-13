@@ -3,6 +3,7 @@ import { existsSync, statSync } from "fs";
 import { homedir } from "os";
 import path from "path";
 import type { IPty } from "node-pty";
+import { accountProxyEnvironment } from "./account-proxy";
 import { preferForOomKill } from "./system-stats";
 
 /**
@@ -114,14 +115,22 @@ function defaultShell(): string {
 // user's shell environment.
 const STRIPPED_ENV = /^(OMP_WEB_|__NEXT|NEXT_|PORT$|NODE_ENV$|HOSTNAME$)/;
 
-export function terminalEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+/** The user's environment without omp-web's own variables (password, port, Next internals). */
+export function userEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
     if (value !== undefined && !STRIPPED_ENV.test(key)) env[key] = value;
   }
+  return env;
+}
+
+export function terminalEnv(source: NodeJS.ProcessEnv = process.env): Record<string, string> {
+  const env = userEnv(source);
   env.TERM = "xterm-256color";
   env.COLORTERM = "truecolor";
   env.TERM_PROGRAM = "omp-web";
+  // `omp` started in this shell routes each account through its own proxy, like chats do.
+  try { Object.assign(env, accountProxyEnvironment()); } catch { /* Unreadable agent dir: the shell still starts. */ }
   return env;
 }
 

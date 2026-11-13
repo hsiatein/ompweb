@@ -2,9 +2,13 @@
 
 import { useState, useRef, useCallback, useEffect } from "react";
 
-function playTone(ctx: AudioContext) {
+/** Completion: two rising notes. */
+const DONE_NOTES = [523.25, 659.25];
+/** Something needs you (dialog, sudo, agent notification): three quicker, higher notes. */
+const ATTENTION_NOTES = [783.99, 987.77, 1174.66];
+
+function playTone(ctx: AudioContext, freqs: number[] = DONE_NOTES, spacing = 0.18) {
   const now = ctx.currentTime;
-  const freqs = [523.25, 659.25];
   freqs.forEach((freq, i) => {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
@@ -12,7 +16,7 @@ function playTone(ctx: AudioContext) {
     gain.connect(ctx.destination);
     osc.type = "sine";
     osc.frequency.value = freq;
-    const t = now + i * 0.18;
+    const t = now + i * spacing;
     gain.gain.setValueAtTime(0, t);
     gain.gain.linearRampToValueAtTime(0.18, t + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.001, t + 0.45);
@@ -40,6 +44,34 @@ function getSharedCtx(): AudioContext | null {
     return null;
   }
   return sharedCtx;
+}
+
+function soundPreferenceEnabled(): boolean {
+  try {
+    return localStorage.getItem("omp-sound-enabled") !== "false";
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Chime for things that need the user (new dialogs, sudo prompts, agent notifications).
+ * Callable outside React; follows the same sound preference as the completion tone. Browsers
+ * only play it once the page has had a user gesture (ChatInput unlocks the shared context).
+ */
+export function playAttentionSound(): void {
+  if (typeof window === "undefined" || !soundPreferenceEnabled()) return;
+  const ctx = getSharedCtx();
+  if (!ctx) return;
+  const play = () => {
+    try {
+      playTone(ctx, ATTENTION_NOTES, 0.12);
+    } catch {
+      // AudioContext not available
+    }
+  };
+  if (ctx.state === "suspended") ctx.resume().then(play).catch(() => {});
+  else play();
 }
 
 export function useAudio() {

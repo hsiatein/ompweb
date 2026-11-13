@@ -3,8 +3,10 @@ import { createInterface } from "readline";
 import { sanitizeProjectCommandEnvironment } from "../project-command-env";
 import { preferForOomKill } from "../system-stats";
 import { resolveOmpBin, wrapWindowsScript } from "./omp-cli";
-import { enforceSingleAgentPolicy } from "./single-agent-policy";
+import { applySubagentPolicy } from "./subagent-policy";
 import { encodeRpcCommand, RpcFrameDecoder, type RpcFrameRecord, type RpcProtocolVersion } from "./rpc-frame";
+import { ensureGlobalRequestPolicyFile } from "../request-policy-files";
+import { accountProxyEnvironment } from "../account-proxy";
 
 /**
  * Process + protocol layer for `omp --mode rpc-ui` (NDJSON over stdio).
@@ -81,6 +83,7 @@ const STDERR_TAIL_LIMIT = 8 * 1024;
 
 export class RpcProcess {
   readonly cwd: string;
+  accountProxyReady = false;
   private child: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<string, PendingCommand>();
   private readonly frameListeners = new Set<(frame: RpcFrame) => void>();
@@ -105,11 +108,11 @@ export class RpcProcess {
     this.cwd = options.cwd;
     if (options.onFrame) this.frameListeners.add(options.onFrame);
 
-    const args = enforceSingleAgentPolicy(["--mode", "rpc-ui", "--cwd", options.cwd, ...(options.extraArgs ?? [])]);
+    const args = applySubagentPolicy(["--mode", "rpc-ui", "--cwd", options.cwd, ...(options.extraArgs ?? [])]);
     // omp-web ignores named profiles (OMP_PROFILE/PI_PROFILE): strip them so the
     // child resolves the same default agent dir. An explicit options.env entry
     // still wins (used to force the default profile for isolated test runs).
-    const childEnv = sanitizeProjectCommandEnvironment({ ...process.env, ...options.env });
+    const childEnv = sanitizeProjectCommandEnvironment({ ...process.env, OMP_AUTH_REQUEST_POLICY_FILES: JSON.stringify([ensureGlobalRequestPolicyFile()]), ...options.env, ...accountProxyEnvironment() });
     if (options.env?.OMP_PROFILE === undefined) delete childEnv.OMP_PROFILE;
     if (options.env?.PI_PROFILE === undefined) delete childEnv.PI_PROFILE;
     const target = wrapWindowsScript(bin, args);
@@ -170,6 +173,7 @@ export class RpcProcess {
         return;
       }
       if (frame.type === "ready") {
+        this.accountProxyReady = frame.accountProxyVersion === 1;
         resolveReady(frame);
         return;
       }
@@ -232,7 +236,11 @@ export class RpcProcess {
       timer.unref?.();
       this.readyPromise.finally(() => clearTimeout(timer)).catch(() => {});
     });
-    return Promise.race([this.readyPromise, timeout]);
+    return Promise.race([this.readyPromise, timeout]).then((ready) => {
+      if (ready.requestPolicyVersion !== 1) throw new Error("OMP requires native hard request-policy support. Build and install the maintained OMP runtime.");
+      if (!this.accountProxyReady) throw new Error("OMP requires native account-proxy support. Build and install the maintained OMP runtime.");
+      return ready;
+    });
   }
 
   /** Enables bounded protocol-v2 framing when the ready frame advertises it. */

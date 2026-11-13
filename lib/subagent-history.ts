@@ -89,6 +89,17 @@ function progressUpsertBlocked(existing: SubagentHistoryEntry): boolean {
     || existing.status === "aborted";
 }
 
+const ASYNC_TASK_RESULT_RE = /<task-result id="([A-Za-z0-9_-]{1,80})"[^>]*?\bstatus="([a-z]+)"(?:[^>]*?\bduration="([0-9hms.]+)")?[^>]*>/g;
+
+/** "6m57s" / "1h2m" / "850ms" → milliseconds. */
+function parseTaskDuration(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parts = [...value.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)];
+  if (parts.length === 0) return undefined;
+  const scale: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 };
+  return parts.reduce((total, [, amount, unit]) => total + Number(amount) * scale[unit], 0);
+}
+
 /**
  * Recover the subagent roster from a parent session file. Walks task
  * toolResults, merging `progress` (live-snapshot fields) with `results`
@@ -271,6 +282,29 @@ export function extractSubagentHistory(sessionFilePath: string): SubagentHistory
           transcriptAvailable: false,
         }, { ignoreTerminal: true });
       }
+    }
+  }
+  // Detached (async) tasks persist only the spawn-time snapshot (status
+  // "pending", empty results); omp reports their completion later as
+  // `<task-result id=".." agent=".." status=".." duration="6m57s">`, either in
+  // an `async-result` custom message or in the agent's own `wait` tool result.
+  // Without this every finished detached task stays "running" in the roster.
+  for (const entry of entries) {
+    const record = entry as unknown as Record<string, unknown>;
+    let text: string | undefined;
+    if (record.type === "custom_message" && record.customType === "async-result" && typeof record.content === "string") {
+      text = record.content;
+    } else if (entry.type === "message" && isRecord(entry.message) && entry.message.role === "toolResult"
+      && entry.message.toolName === "wait" && Array.isArray(entry.message.content)) {
+      text = entry.message.content.map((block) => (isRecord(block) && typeof block.text === "string" ? block.text : "")).join("\n");
+    }
+    if (!text) continue;
+    for (const match of text.matchAll(ASYNC_TASK_RESULT_RE)) {
+      const existing = byId.get(match[1]);
+      if (!existing || progressUpsertBlocked(existing)) continue;
+      const status = progressStatusToRoster(match[2] === "cancelled" ? "aborted" : match[2]);
+      if (status === "started") continue;
+      byId.set(existing.id, { ...existing, status, durationMs: parseTaskDuration(match[3]) ?? existing.durationMs });
     }
   }
   // Resolve sibling transcript files and detached markers.

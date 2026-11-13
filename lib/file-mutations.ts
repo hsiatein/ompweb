@@ -61,7 +61,7 @@ function revision(bytes: Uint8Array): string {
 function readText(filePath: string) {
   const stat = checkEntry(filePath);
   if (!stat.isFile() || stat.nlink > 1) fail("file_edit_unsupported", 400, "Only regular, non-hardlinked UTF-8 text files can be edited");
-  if (stat.size > TEXT_PREVIEW_MAX_BYTES) fail("file_too_large_preview", 413, "File exceeds the 256 KiB editor limit");
+  if (stat.size > TEXT_PREVIEW_MAX_BYTES) fail("file_too_large_preview", 413, "File exceeds the 2 MiB editor limit");
   const fd = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   let bytes: Buffer;
   try {
@@ -102,7 +102,7 @@ export function saveTextFile(filePath: string, content: unknown, expectedRevisio
   if (original.revision !== expectedRevision) fail("file_edit_conflict", 409, "File changed on disk. Your edits have not been saved");
   const text = original.content.includes("\r\n") ? content.replace(/\r?\n/g, "\r\n") : content;
   const bytes = Buffer.from(text, "utf-8");
-  if (bytes.length > TEXT_PREVIEW_MAX_BYTES) fail("file_too_large_preview", 413, "File exceeds the 256 KiB editor limit");
+  if (bytes.length > TEXT_PREVIEW_MAX_BYTES) fail("file_too_large_preview", 413, "File exceeds the 2 MiB editor limit");
   const temporary = path.join(path.dirname(target), `.omp-edit-${randomUUID()}`);
   try {
     fs.writeFileSync(temporary, bytes, { flag: "wx", mode: original.stat.mode & 0o777 });

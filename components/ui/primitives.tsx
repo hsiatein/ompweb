@@ -8,6 +8,8 @@
 import { Dialog as BaseDialog } from "@base-ui/react/dialog";
 import { Tooltip as BaseTooltip } from "@base-ui/react/tooltip";
 import { Collapsible as BaseCollapsible } from "@base-ui/react/collapsible";
+import { Popover as BasePopover } from "@base-ui/react/popover";
+import { CircleHelp } from "lucide-react";
 import type React from "react";
 
 /* ---------------------------------- Dialog --------------------------------- */
@@ -111,6 +113,32 @@ export function Tooltip({ content, children, side = "top" }: {
         </BaseTooltip.Portal>
       </BaseTooltip.Root>
     </BaseTooltip.Provider>
+  );
+}
+
+/* --------------------------------- InfoHint --------------------------------- */
+
+/**
+ * Small "?" button for secondary explanations: opens on hover with a pointer,
+ * and a tap toggles it on touch screens (a tooltip cannot be reached there).
+ */
+export function InfoHint({ children, label, side = "top" }: {
+  children: React.ReactNode;
+  /** Accessible name of the trigger button. */
+  label: string;
+  side?: "top" | "bottom" | "left" | "right";
+}) {
+  return (
+    <BasePopover.Root>
+      <BasePopover.Trigger openOnHover delay={200} closeDelay={100} className="info-hint" aria-label={label}>
+        <CircleHelp size={13} aria-hidden="true" />
+      </BasePopover.Trigger>
+      <BasePopover.Portal>
+        <BasePopover.Positioner side={side} sideOffset={6} collisionPadding={8} style={{ zIndex: 1100 }}>
+          <BasePopover.Popup className="info-hint-popup">{children}</BasePopover.Popup>
+        </BasePopover.Positioner>
+      </BasePopover.Portal>
+    </BasePopover.Root>
   );
 }
 

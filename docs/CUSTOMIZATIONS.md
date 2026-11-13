@@ -1,7 +1,7 @@
 # Fork customizations
 
-The complete fork-versus-upstream inventory is in the [English README](../README.md#this-fork),
-[简体中文 README](../README.zh-CN.md#本分支增强) and [日本語 README](../README.ja.md#このフォークの変更).
+A short feature summary is in the [English README](../README.md#what-the-fork-adds),
+[简体中文 README](../README.zh-CN.md#本分支新增) and [日本語 README](../README.ja.md#フォークでの追加).
 This page contains selected implementation, installation and privacy notes:
 
 - Charm Hyper credit balance display, with a clearly marked 250-credit estimate
@@ -30,9 +30,14 @@ do not expose an unauthenticated agent to the public internet.
 **Settings → Agents & Policies → Instructions** stores multiple prompt rules:
 
 - Global, provider ID, or exact provider ID + model ID.
-- **Model > provider > global**: only the most specific matching text is
-  appended, never all three. Identical model IDs under different providers
-  are independent; display names and fuzzy model aliases are not scope keys.
+- **Model > provider > global**: by default only the most specific matching
+  text is appended. A provider or model rule can instead **append to
+  inherited** (`"combine": "append"`): the broader level's effective rules
+  apply too, this text after them, walking up until a replacing or blocking
+  level (`resolveAgentInstructions` returns the applied rules broadest first;
+  each becomes its own system-prompt entry). Identical model IDs under
+  different providers are independent; display names and fuzzy model aliases
+  are not scope keys.
 - An absent rule inherits. Explicit empty text disables broader custom
   instructions for that scope. Deleting the rule restores inheritance.
 - Provider and model fields are linked dropdowns, not free-text inputs. Providers
@@ -137,8 +142,8 @@ former Agents, Agent & Intelligence, and Safety & Approvals categories.
 Horizontal tabs organize the existing controls:
 
 - **Instructions**: scoped global, provider, and model custom instructions.
-- **Subagents**: task-agent definitions, including bundled templates and
-  user/project agents.
+- **Subagents**: delegation permission, maximum nesting depth and concurrency,
+  plus task-agent definitions, bundled templates and user/project agents.
 - **Runtime policies**: all 13 existing compaction, memory, automatic-learning,
   and retry controls.
 - **Tool approvals**: approval mode, Bash override, and extension-tool requests.
@@ -147,7 +152,7 @@ Runtime and approval controls retain their native configuration keys and
 automatic saves through `/api/omp-settings`. Instruction and subagent editors
 retain their own save controls and keep drafts while switching subtabs.
 Settings search opens the matching subtab. Native-setting loading/errors stay
-inside the runtime/approval panels, leaving both editors and navigation available.
+with their controls, leaving the instruction and subagent editors available.
 Browser link/file-opening preferences remain in Interface & Behavior → Interaction behavior.
 
 ## Appearance & Personalization
@@ -187,32 +192,50 @@ This does not uninstall plugins or remove the backend `/api/plugins` endpoint.
 
 ## Validation
 
-### Single-agent policy
+### Subagent policy
 
-This customized build deliberately disables built-in subagent creation. Every
-RPC process, including resumed sessions, receives `bin/omp-single-agent.yml` as
-its final configuration overlay. The launcher validates the required policy
-before spawning OMP and refuses to start if it is missing or relaxed.
+**Settings → Agents & Policies → Subagents** automatically saves:
 
-`task.maxRecursionDepth: 0` removes the `task` tool and rejects agent/workpool
-creation through `eval`, including `xd://` dispatch. Speculative task launching
-is disabled, and task tool approval is denied as an additional safeguard.
-The main agent keeps its normal tools; historical subagent results remain
-readable. Do not use `task.maxConcurrency: 0` to disable agents: zero means
-unlimited concurrency. Existing live processes require a restart.
+- **Allow subagents**: `subagentsEnabled` in `omp-web-settings.json`, initially
+  false, through `/api/web-settings`.
+- **Maximum subagent depth**: native `task.maxRecursionDepth` in `config.yml`,
+  through `/api/omp-settings`. The main agent is depth 0; 1 allows one child
+  level, 0 disables creation, and -1 permits unlimited nesting.
+- **Maximum concurrent subagents**: native `task.maxConcurrency`. Positive
+  integers bound each parent's running children; 0 permits unlimited concurrency.
 
-This is an OMP tool policy, not an OS sandbox against arbitrary subprocesses or
-external model APIs. It applies to processes launched by this fork, not other
-OMP clients. Recheck compatibility after updating the OMP binary:
+Every RPC launch appends the atomically generated
+`omp-web-subagent-policy.json` as its final configuration overlay. Saved web
+limits therefore take precedence over workspace and custom launch arguments.
+Disabled delegation forces depth 0, disables speculative spawning and denies
+task approval. Enabled delegation restores the saved depth/concurrency limits;
+tool presets and other native approval rules continue to apply.
+Changes take effect for new or restarted OMP processes.
+
+The paired OMP runtime shares one parent budget across task calls, direct Eval
+`agent()` calls and workpools. Excess children queue; cancellation releases
+queued admission. Nested parents have independent budgets so a waiting parent
+can let its own children finish. These controls cover OMP's delegation APIs;
+arbitrary shell clients retain their own process and network behavior.
+
+The opt-in smoke uses temporary settings and a loopback model fixture:
 
 ```sh
-node scripts/check-single-agent-policy.mjs
+node scripts/check-subagent-policy.mjs task,eval-agent,eval-workpool,read-normal,enabled-task,enabled-zero-depth
 ```
 
-The opt-in integration test uses isolated temporary agent state and a loopback
-mock model, without real account credentials or model usage. It checks single
-and 68-item batch tasks, eval/workpool and xdev entry points, as well as ordinary
-read/write/eval tools. Verified with OMP 18.4.4.
+Those six scenarios were exercised against the paired 18.12.6 source build:
+disabled task/Eval/workpool admission, preserved ordinary reads, a real enabled
+child completion, and a saved zero-depth limit overriding a broader launch config.
+Additional script cases cover batch, Python, xdev and ordinary write/Eval paths.
+
+### Stop and restart
+
+Full and minimized composers and configured stop shortcuts interrupt the
+current task directly. Manual shell commands use `abort_bash`; agent runs use
+`abort`. Reload replaces the child against its transcript. Restart OMP sessions
+stops all live children, with subsequent commands reopening their sessions.
+In-flight operations may lose progress. External tmux jobs remain independent.
 
 ### First-run provider setup
 

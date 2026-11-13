@@ -22,7 +22,9 @@ export function sanitizeSessionTitle(value: string | undefined): string | undefi
  */
 export function deriveSessionTitleFromFirstMessage(firstMessage: string | undefined): string | null {
   if (!firstMessage || firstMessage === "(no messages)") return null;
-  const sanitized = sanitizeSessionTitle(firstMessage);
+  // `/skill:<name> <request>` is titled by the request; a bare invocation by the skill name.
+  const skill = /^\/skill:(\S+)\s*([\s\S]*)$/.exec(firstMessage.trim());
+  const sanitized = sanitizeSessionTitle(skill ? (skill[2].trim() || skill[1]) : firstMessage);
   if (!sanitized || !/[\p{L}\p{N}]/u.test(sanitized)) return null;
 
   const characters = Array.from(sanitized);

@@ -2,6 +2,7 @@
 
 import { useId, useState, type KeyboardEvent } from "react";
 import { useI18n } from "@/lib/i18n";
+import { InfoHint } from "@/components/ui/primitives";
 import { formatCompactNumber } from "@/lib/format";
 import { generationSpeedTier, summarizeGenerationSpeed, type GenerationSpeedSample } from "@/lib/generation-speed";
 
@@ -54,7 +55,10 @@ export function GenerationSpeedPanel({ samples }: { samples: readonly Generation
   return (
     <div className="speed-panel">
       <div className="speed-panel-header">
-        <span className="speed-panel-title">{t("speedPanel.title")}</span>
+        <span className="speed-panel-title">
+          {t("speedPanel.title")}
+          <InfoHint label={t("speedPanel.formulaLabel")} side="bottom">{t("speedPanel.formula")}</InfoHint>
+        </span>
         <div className="speed-panel-counts" role="group" aria-label={t("speedPanel.sampleCount")}>
           {SAMPLE_COUNTS.map((option) => (
             <button
@@ -88,7 +92,9 @@ export function GenerationSpeedPanel({ samples }: { samples: readonly Generation
                 className="speed-panel-mean-line"
                 style={{ bottom: `${(stats.mean / scaleMax) * 100}%` }}
                 title={t("speedPanel.meanLine", { value: rate(stats.mean) })}
-              />
+              >
+                <span className="speed-panel-mean-label">{t("speedPanel.meanShort")}</span>
+              </span>
               {shown.map((entry, index) => (
                 <span
                   key={`${entry.timestamp ?? "x"}-${index}`}
@@ -123,7 +129,6 @@ export function GenerationSpeedPanel({ samples }: { samples: readonly Generation
           </dl>
         </div>
       )}
-      <p className="speed-panel-note">{t("speedPanel.note")}</p>
     </div>
   );
 }

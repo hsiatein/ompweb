@@ -9,6 +9,8 @@
  * (`MAX_AGENT_COMMAND_REQUEST_BYTES`) and the model's context window, so the
  * budget is enforced on the aggregate rather than per file.
  */
+import { uploadedFileReference } from "./uploaded-files";
+
 export const MAX_TOTAL_ATTACHED_TEXT_BYTES = 4 * 1024 * 1024;
 /** A lone file may fill the whole text budget. */
 export const MAX_ATTACHED_TEXT_BYTES = MAX_TOTAL_ATTACHED_TEXT_BYTES;
@@ -25,8 +27,11 @@ const TEXT_FILE_EXTENSIONS: Record<string, true> = {
 export interface AttachedTextFileData {
   name: string;
   mimeType: string;
+  /** Inlined text; empty for an uploaded file. */
   content: string;
   size: number;
+  /** Set when the file was uploaded (POST /api/uploads) instead of inlined: binary or larger than the text budget. */
+  uploadedPath?: string;
 }
 
 function getFileExtension(name: string): string {
@@ -86,19 +91,6 @@ export function selectTextAttachments<T extends { size: number }>(
   return { accepted, tooLarge, overBudget };
 }
 
-/** Banner text for a batch that produced no usable attachments. */
-export function describeTextAttachmentSkip(
-  selection: Pick<TextAttachmentSelection<unknown>, "tooLarge" | "overBudget">,
-): string | null {
-  if (selection.tooLarge > 0) {
-    return `${selection.tooLarge} file(s) skipped: files up to ${formatAttachmentBytes(MAX_ATTACHED_TEXT_BYTES)} are supported.`;
-  }
-  if (selection.overBudget > 0) {
-    return `${selection.overBudget} file(s) skipped: attachments are limited to ${formatAttachmentBytes(MAX_TOTAL_ATTACHED_TEXT_BYTES)} per message.`;
-  }
-  return null;
-}
-
 export function isTextAttachmentFile(file: Pick<File, "name" | "type">): boolean {
   return file.type === "text/plain"
     || file.type === "text/markdown"
@@ -116,13 +108,14 @@ function fenceForContent(content: string): string {
   return "`".repeat(Math.max(3, longestRun + 1));
 }
 
-/** Add text-file contents to the prompt while keeping the attachment boundary clear. */
+/** Add text-file contents (and uploaded-file references) to the prompt while keeping the attachment boundary clear. */
 export function composeMessageWithTextAttachments(
   message: string,
   files: AttachedTextFileData[],
 ): string {
   if (files.length === 0) return message;
   const blocks = files.map((file) => {
+    if (file.uploadedPath) return uploadedFileReference({ name: file.name, path: file.uploadedPath, size: file.size });
     const fence = fenceForContent(file.content);
     return `Attached file: ${file.name}\n${fence}${languageForFile(file.name)}\n${file.content}\n${fence}`;
   });

@@ -5,7 +5,7 @@ import type { AgentMessage, ExitedRpcSession, ManagedProject, ProjectLaunchConfi
 import type { ProjectDropTarget } from "@/lib/project-ordering";
 import { formatExitedSessionNotice, useI18n } from "@/lib/i18n";
 import { comparableProjectPath } from "@/lib/comparable-path";
-import { Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileText, Folder, GitBranch, Hash, MessageSquare, MessageSquarePlus, MoreHorizontal, Pencil, Pin, PinOff, Plus, SlidersHorizontal, SquareTerminal, Trash2 } from "lucide-react";
+import { Archive, ArrowDown, ArrowUp, Check, ChevronDown, ChevronRight, Copy, ExternalLink, FileText, Folder, GitBranch, Hash, MessageSquare, MessageSquarePlus, MoreHorizontal, Pencil, Pin, PinOff, Plus, SlidersHorizontal, SquareTerminal, TerminalSquare, Trash2 } from "lucide-react";
 import { Tooltip } from "./ui/primitives";
 import { ConfirmDialog } from "./ui/field";
 import { copyText } from "@/lib/clipboard";
@@ -14,6 +14,7 @@ import { toast } from "./ui/toast";
 import { contributeContextMenu } from "@/lib/context-menu";
 import { copyFromContextMenu } from "./ui/context-menu";
 import { requestTerminalAt } from "@/lib/terminal-request";
+import { copyTerminalCommandAt } from "./native-terminal-action";
 import { matchesShortcut } from "@/lib/keyboard-shortcuts";
 import {
   MAX_PROJECT_SESSIONS,
@@ -27,6 +28,7 @@ import {
   PathLabel,
   ExitedSessionIndicator,
   RunningSessionIndicator,
+  SubagentSessionIndicator,
   SIDEBAR_BUTTON_TRANSITION,
   SidebarPortalMenu,
   UnreadSessionIndicator,
@@ -51,6 +53,8 @@ interface ProjectRowProps {
   hiddenCount: number;
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
+  /** Working subagents per session (background tasks can outlive the main run). */
+  subagentCounts: ReadonlyMap<string, number>;
   unreadSessionIds: Set<string>;
   exitedSessions: Map<string, ExitedRpcSession>;
   relativeTimeNow: number;
@@ -99,6 +103,7 @@ function ProjectRow({
   hiddenCount,
   selectedSessionId,
   runningSessionIds,
+  subagentCounts,
   unreadSessionIds,
   exitedSessions,
   relativeTimeNow,
@@ -224,8 +229,12 @@ function ProjectRow({
               { id: "pin", label: project.pinned ? t("contextMenu.unpin") : t("contextMenu.pin"), icon: project.pinned ? PinOff : Pin, onSelect: () => onTogglePinned(project.path) },
               { id: "rename", label: t("contextMenu.renameWorkspace"), icon: Pencil, onSelect: startAliasEdit },
               { id: "launch-config", label: t("contextMenu.launchConfig"), icon: SlidersHorizontal, onSelect: () => onEditLaunchConfig(project) },
+              ...(worktreeBranch && onToggleWorktrees
+                ? [{ id: "worktrees", label: t("contextMenu.worktrees", { branch: worktreeBranch }), icon: GitBranch, onSelect: () => { if (!worktreeOpen) onToggleWorktrees(); } }]
+                : []),
               { id: "copy-path", label: t("contextMenu.copyPath"), icon: Copy, onSelect: () => copyFromContextMenu(project.path) },
               { id: "terminal", label: t("contextMenu.openInTerminal"), icon: SquareTerminal, onSelect: () => requestTerminalAt(project.path) },
+              { id: "terminal-command", label: t("contextMenu.copyTerminalCommand"), icon: TerminalSquare, onSelect: () => copyTerminalCommandAt(project.path) },
               { id: "move-up", label: t("contextMenu.moveUp"), icon: ArrowUp, disabled: !canMoveUp, onSelect: () => void onMoveProject(project.path, -1) },
               { id: "move-down", label: t("contextMenu.moveDown"), icon: ArrowDown, disabled: !canMoveDown, onSelect: () => void onMoveProject(project.path, 1) },
               { id: "remove", label: t("contextMenu.removeWorkspace"), icon: Trash2, danger: true, disabled: removeBusy, onSelect: () => setConfirmRemove(true) },
@@ -351,7 +360,9 @@ function ProjectRow({
           </button>
           </Tooltip>
         )}
-        {worktreeBranch && worktreeToggleRef && (
+        {/* The worktree switcher is opened from the right-click menu; its
+            branch label (the dropdown's anchor) shows only while it is open. */}
+        {worktreeBranch && worktreeToggleRef && worktreeOpen && (
           <button
             type="button"
             ref={worktreeToggleRef}
@@ -493,6 +504,7 @@ function ProjectRow({
                   node={node}
                   selectedSessionId={selectedSessionId}
                   runningSessionIds={runningSessionIds}
+                  subagentCounts={subagentCounts}
                   unreadSessionIds={unreadSessionIds}
                   exitedSessions={exitedSessions}
                   relativeTimeNow={relativeTimeNow}
@@ -798,6 +810,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   node,
   selectedSessionId,
   runningSessionIds,
+  subagentCounts,
   unreadSessionIds,
   exitedSessions,
   relativeTimeNow,
@@ -809,6 +822,8 @@ const SessionTreeItem = memo(function SessionTreeItem({
   node: SessionTreeNode;
   selectedSessionId: string | null;
   runningSessionIds: Set<string>;
+  /** Working subagents per session (background tasks can outlive the main run). */
+  subagentCounts: ReadonlyMap<string, number>;
   unreadSessionIds: Set<string>;
   exitedSessions: Map<string, ExitedRpcSession>;
   relativeTimeNow: number;
@@ -825,6 +840,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
   // check then never re-renders unless this row's flags actually changed.
   const isSelected = sessionId === selectedSessionId;
   const isRunning = runningSessionIds.has(sessionId);
+  const subagentCount = subagentCounts.get(sessionId) ?? 0;
   const isUnread = unreadSessionIds.has(sessionId);
   const exited = exitedSessions.get(sessionId);
 
@@ -858,6 +874,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
           session={node.session}
           isSelected={isSelected}
           isRunning={isRunning}
+          subagentCount={subagentCount}
           isUnread={isUnread}
           exited={exited}
           relativeTimeNow={relativeTimeNow}
@@ -878,6 +895,7 @@ const SessionTreeItem = memo(function SessionTreeItem({
               node={child}
               selectedSessionId={selectedSessionId}
               runningSessionIds={runningSessionIds}
+              subagentCounts={subagentCounts}
               unreadSessionIds={unreadSessionIds}
               exitedSessions={exitedSessions}
               relativeTimeNow={relativeTimeNow}
@@ -903,6 +921,10 @@ const SessionTreeItem = memo(function SessionTreeItem({
     const id = prev.node.session.id;
     if (prev.runningSessionIds.has(id) !== next.runningSessionIds.has(id)) return false;
   }
+  if (prev.subagentCounts !== next.subagentCounts) {
+    const id = prev.node.session.id;
+    if (prev.subagentCounts.get(id) !== next.subagentCounts.get(id)) return false;
+  }
   if (prev.unreadSessionIds !== next.unreadSessionIds) {
     const id = prev.node.session.id;
     if (prev.unreadSessionIds.has(id) !== next.unreadSessionIds.has(id)) return false;
@@ -918,6 +940,7 @@ const SessionItem = memo(function SessionItem({
   session,
   isSelected,
   isRunning,
+  subagentCount = 0,
   isUnread,
   exited,
   onClick,
@@ -932,6 +955,7 @@ const SessionItem = memo(function SessionItem({
   session: SessionInfo;
   isSelected: boolean;
   isRunning?: boolean;
+  subagentCount?: number;
   isUnread?: boolean;
   exited?: ExitedRpcSession;
   onClick: () => void;
@@ -1110,6 +1134,7 @@ const SessionItem = memo(function SessionItem({
           {session.worktreeBranch && <span title={t("sessionSidebar.worktreeTitle", { path: session.cwd })} style={{ display: "flex", alignItems: "center", gap: 3, maxWidth: 56, minWidth: 0, overflow: "hidden", color: "var(--text-dim)", fontSize: 10, flexShrink: 1 }}><GitBranch size={10} strokeWidth={2.4} aria-hidden="true" /><span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.worktreeBranch}</span></span>}
           {hasChildren && <button className="session-item-icon-button" onClick={(event) => { event.stopPropagation(); onToggleCollapse?.(); }} title={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-label={collapsed ? t("sessionSidebar.expandForks") : t("sessionSidebar.collapseForks")} aria-expanded={!collapsed} style={{ display: "flex", alignItems: "center", justifyContent: "center", width: 24, height: 24, padding: 0, flexShrink: 0, border: "none", background: "none", color: "var(--text-dim)", cursor: "pointer", transform: collapsed ? "rotate(-90deg)" : "none", transition: "transform var(--dur-fast) var(--ease-out-warm)" }}><ChevronDown size={12} strokeWidth={1.8} aria-hidden="true" /></button>}
           <div style={{ display: "flex", alignItems: "center", gap: SIDEBAR_STATUS_GAP, flexShrink: 0 }}>
+            {!isRunning && subagentCount > 0 && <SubagentSessionIndicator count={subagentCount} />}
             {(isRunning || exited || isUnread) && (
               <span style={{ display: "flex", alignItems: "center", justifyContent: "center", width: SIDEBAR_STATUS_SLOT, height: SIDEBAR_STATUS_SLOT, flexShrink: 0 }}>
                 {isRunning

@@ -2081,12 +2081,12 @@ test("failed cold-read reconnects never issue process-starting registrations", a
   resetWorld();
   primeSession("s1", [userMsg("u0", "q")]);
   const w = await mountSession("s1");
+  // Create and close observer timers under the same clock.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
   world.live.set("s1", { ...liveSnapshot("s1", 1, null), isStreaming: false, isPromptRunning: false });
   await act(async () => { publishSessionsChanged(["s1"]); });
-  await settle();
   const source = lastEs();
   world.live.delete("s1"); // wrapper vanished before the observer subscription
-  t.mock.timers.enable({ apis: ["setTimeout"] });
   await act(async () => { source.failFatal(); t.mock.timers.tick(1000); });
   await act(async () => { lastEs().failFatal(); t.mock.timers.tick(2000); });
   assert.equal(w.latest.agentRunning, false);

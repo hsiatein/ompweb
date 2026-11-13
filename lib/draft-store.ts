@@ -8,6 +8,7 @@ export interface ChatDraftFile {
   mimeType: string;
   content: string;
   size: number;
+  uploadedPath?: string;
 }
 
 export interface ChatDraft {

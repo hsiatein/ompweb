@@ -378,14 +378,9 @@ export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProp
               >
                 <Archive size={17} strokeWidth={2} aria-hidden="true" />
               </div>
-              <div>
-                <DialogTitle style={{ margin: 0, fontSize: 17, lineHeight: 1.2 }}>
-                  {t("archiveBrowser.title")}
-                </DialogTitle>
-                <div style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 2 }}>
-                  {t("archiveBrowser.description")}
-                </div>
-              </div>
+              <DialogTitle style={{ margin: 0, fontSize: 17, lineHeight: 1.2 }}>
+                {t("archiveBrowser.title")}
+              </DialogTitle>
             </div>
 
             <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -607,9 +602,6 @@ export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProp
               <div style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>
                 {t("archiveBrowser.noArchives")}
               </div>
-              <div style={{ fontSize: 12, color: "var(--text-muted)", maxWidth: 320 }}>
-                {t("archiveBrowser.noArchivesDescription")}
-              </div>
             </div>
           ) : (
             <>
@@ -659,10 +651,7 @@ export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProp
                         fontSize: 12,
                       }}
                     >
-                      <div style={{ fontWeight: 600, marginBottom: 4, color: "var(--text-muted)" }}>
-                        {t("archiveBrowser.noMatches")}
-                      </div>
-                      <div>{t("archiveBrowser.noMatchesDescription")}</div>
+                      {t("archiveBrowser.noMatches")}
                     </div>
                   ) : (
                     filteredArchives.map((archive) => {
@@ -880,21 +869,6 @@ export function ArchiveBrowser({ open, onClose, onRestored }: ArchiveBrowserProp
                             : t("archiveBrowser.restore")}
                         </span>
                       </button>
-                    </div>
-
-                    {/* Notice card */}
-                    <div
-                      style={{
-                        padding: "10px 12px",
-                        borderRadius: "var(--radius-control)",
-                        background: "var(--bg-panel)",
-                        border: "1px solid var(--border)",
-                        fontSize: 12,
-                        color: "var(--text-muted)",
-                        lineHeight: 1.45,
-                      }}
-                    >
-                      {t("archiveBrowser.restoreNotice")}
                     </div>
 
                     {/* Metadata Grid */}

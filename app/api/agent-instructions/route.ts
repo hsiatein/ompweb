@@ -20,7 +20,7 @@ export async function GET() {
 export async function PUT(request: Request) {
   try {
     const rule = parseAgentInstructionRule(await parseJsonWithinLimit(request, 128 * 1024));
-    return NextResponse.json({ rules: saveAgentInstruction(rule, rule.text) });
+    return NextResponse.json({ rules: saveAgentInstruction(rule, rule.text, rule.combine ?? "replace") });
   } catch (error) { return errorResponse(error); }
 }
 

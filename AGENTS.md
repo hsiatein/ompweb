@@ -13,6 +13,9 @@ Lint: `npm run lint`
 The dev server needs the `omp` binary installed (on `PATH`, or set `OMP_WEB_OMP_BIN`).
 All live-agent features go through it; session browsing works without it.
 
+If a local `docs/DEV-WORKFLOW.md` exists (machine-specific, not tracked), follow it
+(Node runtime path, dev server command, browser smoke checks).
+
 ---
 
 ## Architecture
@@ -26,7 +29,7 @@ Browser                Next.js Server                    omp child process
   │                        │                                    │
   ├─ GET /api/sessions ────▶ reads ~/.omp/agent/sessions/       │
   ├─ GET /api/sessions/[id] reads .jsonl file directly          │
-  ├─ GET /api/agent/running/events ───▶ running id SSE          │
+  ├─ GET /api/events ──────▶ page-wide SSE (running, sudo, host tools)│
   │                        │                                    │
   ├─ send message ─────────▶ POST /api/agent/[id]               │
   │                        │   startRpcSession() ── spawn ─────▶│ omp --mode rpc-ui
@@ -50,6 +53,11 @@ Shared foundations in `lib/omp/`:
 - `omp-cli.ts` — locate/probe the installed `omp` binary (`resolveOmpBin`,
   `getOmpVersion`).
 - `rpc-process.ts` — process + NDJSON protocol layer (`RpcProcess`).
+- `login-providers.ts` — `get_login_providers` parsing; folds alias login
+  methods into the provider they store credentials for (`openai-codex-device`
+  → `openai-codex`, `zai-coding-plan` → `zai`). omp's RPC does not report
+  `storeCredentialsAs`, so the table mirrors the catalog `store-as` rules;
+  update it when omp adds one.
 
 ---
 
@@ -61,21 +69,23 @@ app/api/
   sessions/[id]/route.ts          GET/PATCH/DELETE session
   sessions/[id]/context/route.ts  GET ?leafId= — context for a specific leaf
   sessions/[id]/export/route.ts   GET exported HTML for a session
-  agent/new/route.ts              POST { cwd, message, toolNames?, provider?, modelId?, accountPins? }
-  account-routing/route.ts        GET ?sessionId= {disabled,pins,serving} | PUT disable an account / pin a session's account
+  agent/new/route.ts              POST { cwd, message, toolNames?, provider?, modelId?, accountPins?, providerPin? }
+  account-routing/route.ts        GET ?sessionId= {disabled,disabledProviders,providerPin,pins,serving} | PUT global disables / strict session selections
   provider-usage/route.ts         GET ?provider=&model= usage snapshot (`omp usage --json`, 60 s cache)
-  provider-usage/reset/route.ts   POST {accountKey} spend one saved Codex/Claude rate-limit reset → {ok, message}
+  provider-usage/reset/route.ts   POST {accountKey, creditId?} spend one saved Codex/Claude rate-limit reset → {ok, message}
   agent/[id]/route.ts             GET state | POST any RPC command
   agent/[id]/events/route.ts      GET SSE stream
-  agent/running/events/route.ts   GET SSE stream of running session ids + pending "needs you" dialogs
-  auth/**                         provider list, login/logout, API keys (via RPC)
+  events/route.ts                 GET page-wide SSE: running ids + "needs you" dialogs, session-list hints, sudo requests, cross-session host tools
+  auth/**                         provider list, login (?mode=add: another account; success reports added accounts), API keys (via RPC)
   cwd/validate/route.ts           POST validate/select a cwd
   default-cwd/route.ts            POST create ~/omp-cwd-YYYYMMDD
   files/[...path]/route.ts        GET file contents for viewer
   github-repo/route.ts            GET ?cwd= — GitHub owner/repo of the checkout (for #N links)
   home/route.ts                   GET user home directory
+  uploads/route.ts                POST ?name= raw body: store one non-inlinable chat attachment (lib/chat-uploads.ts) → {name, path, size}
   models/route.ts                 GET { models, modelList, defaultModel }
   models-config/route.ts          GET/PUT — read/write ~/.omp/agent/models.yml
+  agent-model-overrides/route.ts  GET {overrides} | PUT {agent, model|null}: omp task.agentModelOverrides, one agent per write
   models-config/test/route.ts     POST test a configured model/provider
   omp-settings/route.ts           GET/PUT native config.yml settings (allow-listed)
   web-settings/route.ts           GET/PUT omp-web's own server settings (auto-resume)
@@ -90,23 +100,35 @@ app/api/
   terminals/[id]/events/route.ts  GET SSE: scrollback replay, then output/exit
   system/route.ts                 GET dashboard snapshot | PUT {memoryGuard} | POST {stopPid} (agent/terminal trees only)
   worktrees/route.ts              GET/POST/DELETE git worktrees
-  scheduled-tasks/route.ts        GET list | POST create a scheduled task
+  scheduled-tasks/route.ts        GET list (+ server timeZone) | POST create a scheduled task
   scheduled-tasks/[id]/route.ts   PATCH edit / {enabled} / {action:"run"} | DELETE
   hooks/[token]/route.ts          POST run a webhook-triggered scheduled task (token = credential, bypasses password)
   favorite-directories/route.ts   GET/PUT directory picker favorites (omp-web-settings.json)
+  web-plugins/route.ts            GET {root, plugins} | POST {id, enabled} / {id, action:"restart"}
+  web-plugins/[id]/files/[...path]/route.ts  GET static file of an enabled plugin (confined to its dir)
+  web-plugins/[id]/api/[...path]/route.ts    streaming HTTP → plugin socket, abort propagation, manifest body limit (excludes /__tools)
 
 lib/
   omp/                 shared omp foundations (paths, CLI probe, RpcProcess)
-  account-routing.ts   server: per-session account pins + disabled accounts → omp auth.accountPolicies overlay
+  uploaded-files.ts    client-safe: upload a chat attachment + the `<file name path size>` prompt reference (mirrored by ompnative src/attachments.ts)
+  chat-uploads.ts      server: `<agent dir>/uploads/<date>/<random>/<name>` store, 30-day pruning
+  account-routing.ts   server: live global provider/account denials + strict per-session pins
+  request-policy-files.ts  atomic native request-policy JSON files and process environment
   account-choices.ts   client-safe account grouping (usage reports → one choice per account)
+  login-accounts.ts    client-safe login outcome diff (added / same account) + add-account auth URL (OpenAI prompt=login)
   attention.ts         client-safe "needs you" item type + dialog title helpers
+  app-events.ts        client: the page's one shared EventSource on /api/events (snapshot replay for late subscribers)
   context-menu.ts      client-safe right-click menu core: contributions, native-menu rules, quoteMarkdown
-  terminal-request.ts  "open in terminal" window event (requestTerminalAt → AppShell → TerminalPanel)
+  terminal-request.ts  "open in built-in terminal" window event (requestTerminalAt → AppShell → TerminalPanel)
+  native-terminal-prefs.ts  client-safe: "Copy terminal command" mode/SSH host (localStorage) + command builder
   agent-client.ts      typed fetch helper for /api/agent commands
   draft-store.ts       local draft persistence helpers
   file-access.ts       allowed file roots for /api/files and worktrees
   file-paths.ts        client/server path encoding helpers
   github-refs.ts       remark plugin linking #N / owner/repo#N + GithubRepoContext
+  text-links.ts        client-safe URL/path detection in plain text (prose, whole inline code, tool output) + `~` expansion
+  remark-text-links.ts remark plugin: link detected paths/URLs (`data-text-link`), trim GFM autolinks at CJK text
+  home-dir.ts          client: `useHomeDir()` — server home dir from /api/home, fetched once per page
   github-repo.ts       server: pick the gh-default GitHub remote from git config
   markdown.ts          shared markdown helpers
   npx.ts               npx runner used by skill install
@@ -118,9 +140,14 @@ lib/
   session-resume.ts    running-session list for auto-resume after a restart
   scheduled-messages.ts  server-sent "Send later" messages into an existing session
   scheduled-tasks.ts   standalone scheduled tasks (new session per run, retention)
+  webhook-listeners.ts server: per-interface webhook listeners (bind/reconcile, POST /hooks/<token>)
   schedule-recurrence.ts  client-safe repeat rules + next-run computation
   session-archive.ts   archive one session (stop child, gc layout, cache flush)
   web-settings.ts      omp-web server settings (~/.omp/agent/omp-web-settings.json)
+  web-plugins.ts       server: web plugin discovery, server supervisor, socket proxy, plugin agent tools
+  web-plugin-host.ts   server: private per-plugin Host API sockets + global-policy gateway environment
+  web-plugin-gateway.ts server: shared lazy auth-gateway child, NDJSON demux, streaming/cancel/idle lifecycle
+  web-plugin-types.ts  client-safe plugin shapes + id rule
   skills-service.ts    pure-Node skill discovery mirroring omp's providers
   tool-presets.ts      PRESET_NONE/DEFAULT/FULL + getToolNamesForPreset()
   types.ts             shared TypeScript types
@@ -128,6 +155,10 @@ lib/
   word-prediction.ts   pure ghost-text arithmetic (advance/accept) for composer word prediction
   terminal-manager.ts  server: PTY shells via optional node-pty (globalThis registry, scrollback)
   system-stats.ts      /proc readers (meminfo, stat, process table, descendants) + preferForOomKill
+  status-board.ts      server: status board store (items per session, push tokens, debounced save, coalesced notify)
+  status-board-blocks.ts  rich item blocks: validation, shorthands, limits
+  status-board-layout.ts  client-safe board layout rules (ordering, progress rate/ETA, staleness)
+  agent-status-tool.ts server host tool `status_board` (set/remove/clear/list/endpoint for the calling session)
   memory-guard.ts      server: low-memory guard (kills largest agent/terminal command) + dashboard snapshot
   memory-guard-settings.ts / system-monitor-types.ts  client-safe guard settings + /api/system shapes
   worktree.ts          project/worktree resolution and git worktree operations
@@ -137,8 +168,8 @@ components/
   SessionSidebar.tsx  session tree + FileExplorer
   ChatWindow.tsx      chat composition + completion sound wrapper
   ChatInput.tsx       input bar + model/thinking/tools/compact controls
-  AccountPicker.tsx   composer account chip (Auto / a specific account per chat)
-  AccountRoutingSettings.tsx  Settings → Connected accounts → Account rotation (temporary disable)
+  AccountPicker.tsx   composer chip: Auto or strict per-chat provider/account selections
+  ConnectedProviders.tsx  Settings → Models & Providers → Connected accounts: one card per provider with usage + provider/account enable switches
   AttentionCenter.tsx sidebar bell listing pending dialogs/sudo prompts; click jumps to the session
   ComposerPanels.tsx  composer-attached todo + subagent panels (collapsible, live states)
   TodoList.tsx        todo phase grid with preview/show-all (used by ComposerPanels)
@@ -149,17 +180,23 @@ components/
   BranchNavigator.tsx in-session branch switcher
   ChatMinimap.tsx     scroll minimap alongside the message list
   MarkdownBody.tsx    markdown renderer
+  TextLink.tsx        selectable text that opens on click (delayed single click; double click selects); LinkifiedText.tsx for tool output
   ModelsConfig.tsx    modal for models/auth configuration
   McpConfig.tsx       MCP inventory + project editor (Settings → Extensions & Skills)
   SkillsConfig.tsx    loaded/search/installable skills (Settings → Extensions & Skills)
   ScheduledTasksPanel.tsx  scheduled tasks window (task list, detail/editor, recent runs)
   FileExplorer.tsx    file tree inside sidebar
-  FileViewer.tsx      file content in a tab
+  FileViewer.tsx      file content in a tab (text, image, audio/video, PDF/DOCX; binary → download)
+  FilePreviews.tsx    CSV/TSV table and Jupyter notebook previews (lib/delimited.ts, lib/notebook.ts)
   GhostMirror.tsx     textarea overlay painting ghost-text word completion
   TabBar.tsx          right-panel tab bar (Explorer, Git, Terminal + open file tabs)
   TerminalPanel.tsx   right-panel Terminal tab: shell tabs + xterm.js view (Ctrl+` toggles)
   SystemPanel.tsx     right-panel System tab: memory/CPU gauges, per-session usage, memory guard
-  ui/                 shared primitives: Dialog/Tooltip/Collapsible, fields, toast, ContextMenuHost
+  StatusBoardPanel.tsx right-panel Status tab: per-session status items (progress, metrics, notes)
+  StatusBlocks.tsx    status item blocks: markdown, key/values, tables, sub-bars, charts, code
+  PluginsPanel.tsx    sidebar plugin mode: plugin list with switches (opening adds a right-panel tab)
+  PluginPage.tsx      right-panel plugin tab: open-plugin state (localStorage) + iframe
+  ui/                 shared primitives: Dialog/Tooltip/InfoHint/Collapsible, fields (ToggleSwitch, TagInput), toast, ContextMenuHost
 
 hooks/
   useAgentSession.ts       messages + streaming + SSE + fork/navigate/reconciliation logic
@@ -191,11 +228,20 @@ hooks/
   and requires: node running exactly the client script, no NODE_OPTIONS, a
   root (euid 0) parent named `sudo`, stdout an anonymous pipe held by no other
   same-user process. The dialog shows that sudo's real cmdline.
-- Browser side: `/api/askpass/events` (SSE, pending list only, never
-  passwords) and `/api/askpass/answer`; `hooks/useAskpassRequests.ts` (one
-  stream, in AppShell) feeds `components/AskpassDialog.tsx` and the attention
-  bell. No listening tab → refused immediately; 240 s timeout (omp's bash
+- Browser side: `askpass_requests` frames on `/api/events` (pending list
+  only, never passwords) and `/api/askpass/answer`; `hooks/useAskpassRequests.ts`
+  (in AppShell) feeds `components/AskpassDialog.tsx` (a floating, non-modal
+  card in the top-right corner: no overlay, no focus grab, Escape folds it,
+  refusing is an explicit button) and the attention bell, whose password
+  entries focus that card instead of switching chats. No listening tab → refused immediately; 240 s timeout (omp's bash
   tool times out at 300 s). Never log or persist a password.
+- Settings → System & Updates → "Answer sudo automatically"
+  (`/api/askpass/auto`, `setAskpassAuto()`): turning it on verifies the
+  password with the real sudo (`-S -k -p '' -- true`, password on stdin
+  only) and keeps it in `__ompAskpass.autoPassword` — memory only, so a
+  restart turns it off. While on, verified prompts are answered at once
+  without a dialog (prompts already waiting too), and the server log records
+  the session and command, never the password. Off clears it.
 - A determined same-user agent can still race the pipe or edit the client
   file; the checks block trivial phishing, not everything.
 
@@ -208,7 +254,8 @@ hooks/
   by every open tab, and stay until closed (or the server stops); at most 8.
   A view attaching gets the last 512 KiB of output replayed, then live output
   (coalesced per 8 ms). The terminal env drops omp-web's own variables
-  (`OMP_WEB_*` incl. the password, `PORT`, `NODE_ENV`, Next internals).
+  (`OMP_WEB_*` incl. the password, `PORT`, `NODE_ENV`, Next internals). It adds
+  `OMP_ACCOUNT_PROXY_FILE`, so `omp` run there keeps per-account proxies.
 - No WebSocket (route handlers cannot upgrade): output is SSE, keystrokes are
   POSTs chained in order and batched per microtask. Only the visible
   terminal holds an SSE connection, to stay within the browser's per-host
@@ -231,9 +278,97 @@ hooks/
   fields/contenteditable, media, `http(s)`/`mailto` links, and anything under
   `[data-native-context-menu]` (the terminal screen). Mark new surfaces that
   need the browser menu with that attribute.
-- "Open in terminal" is a `window` event (`lib/terminal-request.ts`); AppShell
-  opens the Terminal tab and `TerminalPanel` starts a shell in that cwd.
+- "Open in built-in terminal" is a `window` event (`lib/terminal-request.ts`);
+  AppShell opens the Terminal tab and `TerminalPanel` starts a shell in that cwd.
+- "Copy terminal command" (workspace rows, `components/native-terminal-action.ts`):
+  omp-web never launches terminal apps (a page cannot start programs on the
+  browser's computer). It copies `cd <dir>` (Auto when the page URL is
+  loopback, or mode `local`) or `ssh -t <host> 'cd <dir> && exec "$SHELL" -l'`
+  (mode `ssh`, or Auto from another computer) with the per-device SSH host
+  from Settings → Interaction behavior → Terminal command.
 - Copy actions use `copyFromContextMenu` (toast feedback: the menu is gone).
+
+### Web plugins (`lib/web-plugins.ts`, `components/PluginsPanel.tsx`, docs/PLUGINS.md)
+- Optional features kept out of this repo: `<agent dir>/web-plugins/<id>/`
+  (symlinks allowed) with `manifest.json`, static pages and an optional
+  `server`. docs/PLUGINS.md is the contract for plugin authors — update it
+  with any change here.
+- On/off state is `enabledPlugins` in omp-web-settings.json. Enabled servers
+  start from `instrumentation.node.ts` and on enable: `node <server>` from
+  `process.execPath`, cwd = plugin dir, env = `userEnv()` (omp-web's own vars
+  stripped) + `OMP_WEB_PLUGIN_{ID,SOCKET,DATA}` and `OMP_WEB_HOST_SOCKET`, oom_score_adj 800, logs in
+  `<agent dir>/web-plugin-data/<id>/server.log`. Runtimes live on a globalThis
+  map with a generation counter so stale exits/timers are ignored; crashes
+  restart with 1 s → 30 s backoff.
+- Manifest tools become server host tools (`registerServerHostTool`) once
+  the socket accepts connections and are removed on exit/disable;
+  `refreshServerHostTools()` re-sends `set_host_tools` (browser tools kept per
+  wrapper in `browserHostTools`) to every live child. A plugin can never
+  replace an existing server tool name.
+- Page responses stream through `Readable.toWeb`; keep the request AbortSignal
+  attached through response close. Body limits use manifest `maxRequestBytes`
+  (1 MiB default, 64 MiB cap). Tool calls remain buffered.
+- Host sockets are private per plugin and multiplex through one globalThis
+  `omp auth-gateway stdio` child. Always pass the global request-policy file
+  and `accountProxyEnvironment()` (per-account proxies);
+  startup errors include stderr in HTTP 502 and the plugin log. Fingerprint
+  changes restart an idle child; existing generations finish first. Host HTTP
+  disconnects send cancel by id. Legacy single-envelope responses remain valid.
+- Composer catalog loading lives in `lib/web-models.ts`, shared by `/api/models`
+  and host `/omp/models`; the host adds selectable thinking-level ordering.
+  `/omp/accounts` reuses provider usage, aliases and account grouping.
+  Base64url JSON in `x-omp-account-routing` selects strict account/provider
+  routing through `accountRoutingSpawnArgs`. Each pinned request owns a gateway
+  child; keep global policy enforcement and release the binding only after
+  shutdown completes. Unpinned requests retain the shared child.
+- Plugin page backgrounds stay transparent; drawers/dialogs/menus/fullscreen
+  editors need theme-derived near-opaque surfaces even with clear wallpaper
+  glass. Iframe blur can blur underlying plugin content.
+- The sidebar footer's **Plugins** row (above Settings) switches the sidebar body to
+  `PluginsPanel` (mode in localStorage; the workspace list is hidden with
+  `display: none`, not unmounted). Clicking a plugin opens it as a closable
+  right-panel tab after System (`rightView === "plugin"`, `openPlugin` in
+  AppShell, persisted as `omp-web:open-plugin`); the chat always stays the
+  chat. The iframe stays mounted while other tabs are shown; × on the tab
+  closes it; switching the plugin off closes it too. Collapse the chat to
+  give the tab the whole width.
+- `public/plugin-sdk.js` mirrors the app's CSS variables/`data-theme`/font
+  into the same-origin iframe. Same origin means a plugin has omp-web's full
+  power: plugins are trusted code, like the terminal.
+
+### Collapsible chat pane (`components/AppShell.tsx`)
+- Desktop (≥ 960 px) only: « in the top bar opens the right panel and sets
+  `chatCollapsed` (not persisted). `<main>` is `display: none` (still mounted),
+  the sidebar keeps its width, and the right panel gets `right-panel-fill`
+  (flex: 1, no resize handle). A 28 px rail (`chat-collapsed-rail`) between
+  them brings the chat back; so do selecting a session, starting a new chat
+  or closing the right panel.
+
+### Status board (`lib/status-board.ts`, `components/StatusBoardPanel.tsx`)
+- Agents publish status items for THEIR session with the `status_board` server
+  host tool (session id from the RPC wrapper, never from arguments); programs
+  they start push with `POST /api/status/<token>` (one secret 43-char token per
+  session, created by the tool's `endpoint` action, persisted; `proxy.ts` lets
+  exactly that path past the password/origin checks, like `/api/hooks`).
+- Callers only describe items (`id`, `title`, `value`, `max`, `unit`,
+  `detail`, `state`, `kind` inferred, `blocks`); updates merge and a progress
+  item at `max` turns done. `blocks` is rich content validated and normalized
+  by `lib/status-board-blocks.ts` (markdown, kv, table, progress, chart, code;
+  YAML-friendly shorthands; 20 blocks / 48 KiB per item) and rendered by
+  `components/StatusBlocks.tsx`. A list replaces the old one, null clears.
+- Updates may be JSON or YAML: `parseStatusDocument()` (JSON first, then
+  YAML) serves both the push route (256 KiB body; the token is checked before
+  parsing) and the tool's `document` argument. The board owns layout: `lib/status-board-layout.ts`
+  (open chat first, live sessions next; failed → running → paused → notes →
+  done; rate/ETA from a 10-minute history window; stale after 10 min).
+  History keeps one sample per 2 s, 120 max; a counter going backwards resets it.
+- Store: `omp-web-status-board.json` in the agent dir (mode 600, debounced
+  save). Finished items expire after 24 h, any item after 7 days idle; 30
+  items per session, requests all-or-nothing.
+- Live updates ride `/api/events` as `status_board` snapshot frames
+  (coalesced 250 ms, replayed to late subscribers). The panel is always
+  mounted to keep the tab badge (live count, red dot on failures) current and
+  renders only while shown.
 
 ### Memory guard (`lib/memory-guard.ts`, `components/SystemPanel.tsx`)
 - Started from `instrumentation.node.ts` (globalThis state, Linux only); polls
@@ -255,7 +390,7 @@ hooks/
 ### "Needs you" attention bell (`lib/attention.ts`, `components/AttentionCenter.tsx`)
 - Session items are the wrapper's `pendingUiRequests` (select/confirm/input/
   editor/ask/open_url; `attentionItems()`), aggregated by `getAttentionItems()`
-  and carried as `attention` on every `/api/agent/running/events` frame.
+  and carried as `attention` on every `running` frame of `/api/events`.
   `notifyRunningChange()` includes them in its dedupe snapshot, so every path
   that adds or drops a pending dialog (new request, `cancel`, the browser's
   `extension_ui_response`, timeout expiry, destroy) must reach a
@@ -316,6 +451,17 @@ hooks/
   the task leaves webhook mode. With `webhookIncludeBody` the request body
   (read with `readTextWithinLimit`, cut to 16k chars) is appended inside
   `<webhook-body>` and labelled as external data; otherwise it is ignored.
+- Webhook listen (`webhookListen: {interfaces, port}`, `lib/webhook-listeners.ts`):
+  instead of omp-web's own route, the URL works only on a dedicated plain-HTTP
+  listener bound to the chosen interfaces' current addresses (IPv6 link-local
+  skipped) on that port, path `POST /hooks/<token>` (nothing else is served).
+  `triggerScheduledTaskWebhook(token, payload, via)` checks the arrival
+  binding: such a task answers 404 on `/api/hooks/<token>`, and a server-route
+  task answers 404 on any listener. `syncWebhookListeners()` reconciles the
+  globalThis listener set after create/update/delete and every 30 s
+  (interfaces coming up, address changes); bind errors (`EADDRINUSE`, ...) show
+  per endpoint in `webhookEndpoints` of the task view. A stored, malformed
+  `webhookListen` drops the token instead of widening where it works.
 - Agent-created tasks (`lib/agent-task-tool.ts`, tool `scheduled_tasks`:
   create / list / cancel). Always target the CALLING session — the id comes
   from the RPC wrapper, never from tool arguments — so an agent can only
@@ -327,9 +473,19 @@ hooks/
   include the body and carry `expiresAt` (unused URLs are deleted then).
   The returned URL is `localServerUrl()` (OMP_WEB_HOSTNAME/OMP_WEB_PORT set by
   the launcher; a dev server needs `OMP_WEB_PORT` or the URL points at 30177).
+  With `listenInterfaces` (+ optional `listenPort`, default 30179) the agent's
+  webhook gets a dedicated listener instead (same `webhookListen` rules); the
+  tool waits 300 ms for the bind and returns the listening URLs plus any
+  interface without an address or bind error. `list` also prints the
+  server's interfaces with their addresses.
+  The description's FIRST LINE is all a session sees in its tool list (omp
+  shows plugin tools as `xd://` devices, summary capped at 200 bytes; the rest
+  only after reading the device), so it must name every capability.
 - Server host tools (`registerServerHostTool` in `lib/rpc-manager.ts`): tools
   omp-web answers itself, with no browser. Registered on a `globalThis` map
-  at startup (`instrumentation.node.ts` imports `lib/agent-task-tool.ts`),
+  at startup (`instrumentation.node.ts` imports `lib/agent-task-tool.ts` and
+  `lib/agent-memo-tool.ts`, the read-only `memos` tool: list / search / read
+  of `web-memos.json`, no writes),
   sent with `set_host_tools` when each child initializes, and merged into
   every browser `set_host_tools` because omp replaces the whole tool set.
   A browser tool cannot shadow a server tool name.
@@ -352,6 +508,10 @@ hooks/
 - Only session ids are stored; paths are re-resolved on resume.
 - Known limit: resume does not detect a terminal `omp --resume <id>` started
   on the same session while omp-web was down; both would write the file.
+- Production only (`NODE_ENV === "production"`): a `next dev` server on the
+  same agent dir neither claims nor writes the list. The list it would find is
+  the live service's, and resuming those sessions in a second omp makes omp
+  fork each locked session into a duplicate that keeps running.
 
 ### Two kinds of branching — don't confuse them
 - **Fork** (Fork button on user message): creates a new independent `.jsonl` file. Shown as a child in the sidebar tree via `parentSession` header field.
@@ -392,7 +552,8 @@ New frame types (`turn_start/end`, `notice`, `todo_reminder`, ...) must be
 handled or safely ignored.
 
 ### Running state SSE + reconciliation
-- The sidebar listens to `/api/agent/running/events`, backed by `subscribeRunningSessions()` in `lib/rpc-manager.ts`, so running badges update without polling.
+- The sidebar listens to `running` / `sessions-changed` frames on `/api/events`, backed by `subscribeRunningSessions()` in `lib/rpc-manager.ts`, so running badges update without polling. `running` frames also carry `subagentSessions` (`{id, count}` of subagents a session's child reported `started` and not yet finished, from `subagent_lifecycle` payloads): background subagents outlive the main run, which `isRunning()` alone does not show.
+- Each tab holds ONE page-wide stream (`lib/app-events.ts`: shared EventSource, latest `running`/`askpass_requests` snapshot replayed to late subscribers). Browsers allow six HTTP/1.1 connections per host and SSE holds them; a new always-on feature must add a frame type to `/api/events`, not its own EventSource, or ordinary requests (the session list) queue behind open streams.
 - `useAgentSession` still treats per-session SSE as primary for chat events, but while a run is active it periodically calls `GET /api/agent/[id]` and also reconciles on `visibilitychange`/`online`. This fixes missed `agent_end` events from background tabs or half-open connections.
 - Prompt runs use a monotonic run id; late SSE or slow reconciliation responses from an old run must be ignored so they cannot resurrect stale streaming bubbles.
 
@@ -403,7 +564,10 @@ handled or safely ignored.
   panels start collapsed (headers always show live progress / running-summary).
   Subagent chips carry live state (pulsing dot while `started`, check/alert/ban
   for terminal states) fed by the same `subagent_lifecycle`/`subagent_progress`
-  SSE frames; clicking a chip opens the transcript dialog. `TodoList` keeps a
+  SSE frames; clicking a chip opens the transcript dialog. Running chips come
+  first; finished ones (anything not `started` in a live process, all history
+  rows) sit in a nested **Finished · N** group, newest first, folded by
+  default (`omp-web:composer-finished-subagents-collapsed`). `TodoList` keeps a
   non-collapsible default (`collapsible` prop) for SSR tests.
 
 ### Subagent integration (`lib/subagent-types.ts`, `lib/subagent-history.ts`)
@@ -488,6 +652,7 @@ handled or safely ignored.
 ### File access allow-list
 - `/api/files` is intentionally not a general filesystem browser. Allowed roots come from session cwds, their resolved project roots, `~/omp-cwd-*`, and roots explicitly added with `allowFileRoot()`.
 - `/api/cwd/validate`, `/api/default-cwd`, and `/api/worktrees` call `allowFileRoot()` when they make a new location browsable.
+- Outside those roots a file opens only with `?sessionId=` when that session's entries name it (`isFilePathReferencedByEntries`): its absolute path, `file://` form, or `~/…` relative to the server's home (the UI expands `~` the same way through `/api/home`). Any new client-side way of turning text into a file link must have a matching rule there, or the click ends in "Access denied".
 
 ### Session list caching — new sessions must appear immediately
 - `listAllSessions()` (sidebar, command palette) is cached twice: a 30s TTL
@@ -511,6 +676,13 @@ handled or safely ignored.
 - Programmatic smooth scrolling must respect `prefers-reduced-motion`
   (`usePrefersReducedMotion` in `hooks/usePrefersReducedMotion.ts` — also the
   only way to stop SVG SMIL animations, which CSS cannot).
+- The compacted/full history toggle replaces the whole transcript and the
+  first entry id. `CommittedTranscript` drops its anchored render window when
+  `entryIds[0]` changes (old row indices mean other rows), and ChatWindow
+  restores the reading position from `data-entry-id` anchors (messages and
+  the compaction summary) captured at click time. The default view comes
+  from `getHideCompactedHistory()` (`lib/composer-prefs.ts`) when a session
+  is opened.
 
 ### MCP configuration (`lib/omp/mcp-config.ts`, `/api/mcp`, `components/McpConfig.tsx`)
 - Project MCP config resolution order: `.omp/mcp.json`, `.omp/.mcp.json`,
@@ -540,54 +712,86 @@ handled or safely ignored.
 ### Update notifications (`/api/omp-update`, `/api/app-update`)
 - Automatic in-app self-updating has been removed in favor of explicit user notifications and manual terminal commands.
 - `GET /api/app-update` queries the npm registry for `@kahme247/ompweb` updates, detects the install manager (`bun` vs `npm` via `detectInstallMethod`), and returns `updateAvailable` plus the exact terminal command (e.g. `npm install -g @kahme247/ompweb` or `bun add -g @kahme247/ompweb`).
-- `POST /api/omp-update` (`action: "check"`) runs `omp update --check` and returns `updateAvailable` plus `updateCommand: "omp update"`. `action: "update"` runs `omp update` through `bin/omp-web-update-worker.js` (`kind: "omp"`); the worker fails the attempt on a non-zero exit.
-- `OMP_WEB_DISABLE_AUTOUPDATE` covers only omp-web's own update (npm check + app self-update); the OMP runtime check/update is never gated by it.
-- omp replaces its binary by rename, so running children keep the old one. Each wrapper records `ompBinarySpawned` (`ompBinaryFingerprint()`); an idle `prompt` restarts the child first when it changed (same path as account routing, `spawnOutdated()`), so an update never kills running work.
+- `POST /api/omp-update` (`action: "check"`) returns the installed version through
+  `getOmpVersion()` (`omp --version`), `updatesDisabled: true`,
+  `reason: "source_managed"`, and `updateCommand: null`. This web fork requires
+  its paired OMP runtime: official update checks and UI installation controls
+  are removed. `lib/self-update.ts` rejects OMP prepare/commit with
+  `409 runtime_source_managed` before touching leases or launching workers;
+  `bin/omp-web-update-worker.js` also rejects `--kind omp` before side effects.
+  Historical status/acknowledgment remain available for artifact cleanup.
+- `OMP_WEB_DISABLE_AUTOUPDATE` controls omp-web's own registry check and
+  self-update. The OMP source-management lock is independent of that setting.
+  Upgrade OMP through the maintained source checkout and atomic binary
+  replacement. Terminal `omp update` retains its native behavior.
+- omp replaces its binary by rename, so running children keep the old one. Each wrapper records `ompBinarySpawned` (`ompBinaryFingerprint()`); an idle `prompt` restarts the child first when it changed (`spawnOutdated()`), preserving running work.
 - `POST /api/omp-update` (`action: "restart"`) restarts every active OMP session at once, running ones included.
-- Notifications in `AppShell` and settings cards in `SettingsConfig` present the update notification alongside copyable terminal update commands.
+- App update notices and commands remain in Settings. The OMP card shows its
+  local version, the source-management lock, refresh, restart and release notes.
 
 ### Auth and model config
 - Auth flows go through RPC commands (`get_login_providers`, `login`) against the omp child process; credentials live in omp's `agent.db` (SQLite) which omp-web never touches directly.
 - The Models panel reads and writes `models.yml` in the omp agent directory (`~/.omp/agent/models.yml`, `.yaml` fallback).
 - API-key status endpoints must never return the raw key.
 
-### Account choice per chat (`lib/account-routing.ts`, `/api/account-routing`)
-- omp has no RPC to pick or disable an account. omp-web steers it through omp's
-  own `auth.accountPolicies`, written to a content-addressed `--config` overlay in
-  `<agent dir>/omp-web-overlays/` (never rewrite or delete one: omp re-reads
-  overlays at task spawn). State lives in `omp-web-account-routing.json`
-  (accountKeys only, no identities).
-- A disabled account gets `reservePct: 100`. A session pin gives its account
-  `priority: 100` and every sibling `reservePct: 100`; reserve status is what
-  breaks omp's per-session stickiness, so a pin also moves a running chat over.
-  Both are preferences: a blocked/exhausted account still falls back.
-- omp rejects a policy matching zero or several stored accounts, and that fails
-  every request for the provider. Identities come from `omp usage --json`
-  metadata (`getProviderAccounts`); policies use the fewest identity fields that
-  tell siblings apart, only for providers with 2+ identified accounts, and skip
-  the provider when any account is ambiguous. The user's own policies for other
-  providers are carried into the overlay (arrays replace across config layers).
-- Policies are spawn-time. Each wrapper keeps `accountRoutingSpawned`; an idle
-  `prompt` whose `accountRoutingSignature` differs restarts the child first. A
-  session not yet on disk is never restarted (its id would change), so a new
-  chat sends its choice with `ensure_session` (`accountPins`), saved under the
-  real id once omp reports it.
+### Strict provider/account routing (`lib/account-routing.ts`, `lib/request-policy-files.ts`)
+- `omp-web-account-routing.json` stores global disabled providers/accounts,
+  per-session provider/account pins and identity metadata (mode 600).
+  `omp usage --json` supplies identities; ambiguous or unknown new selections
+  fail explicitly. Historical identities keep logged-out denials effective.
+- Global denials win over session selections. Auto permits only allowed
+  candidates; explicit pins fail when unavailable. Account restrictions also
+  exclude anonymous static/env/config keys for that provider. Single-account
+  providers support the same disable/pin controls.
+- `RpcProcess` supplies `OMP_AUTH_REQUEST_POLICY_FILES`: one global policy and,
+  for chat children, one per-process session policy. Atomic file replacement
+  updates live children at their next request; `accountRoutingPolicyFile`
+  tracks the binding and is released at child exit. Missing or invalid files
+  fail closed. Detached descendants retaining a released file fail on their
+  next policy-controlled request.
+- The maintained OMP fork checks policy during model availability, credential
+  selection/rotation and HTTP dispatch, including SDK retries and auxiliary
+  model calls. Already-admitted HTTP requests can finish. RPC readiness must
+  advertise `requestPolicyVersion: 1`; older runtimes fail startup explicitly.
+  These are model-pipeline controls; arbitrary shell clients have their own
+  network and credential behavior.
+- A new chat passes `accountPins` and `providerPin` with `ensure_session`.
+  `bindAccountRoutingPolicy` persists them under the real session id, and
+  `routingSessionId` lets the composer edit that live policy before its first
+  prompt. `routingInitializing` gates changes while creation is in flight.
 - "Last used" reads the session's `credential_pin` entries and matches omp's
   `credentialPinHash` (sha256 of provider, accountId, email, orgId, projectId).
+- `/api/provider-usage` preserves the full inventory and attaches each report's
+  `disabled` flag from current global provider/account denials AFTER the quota
+  cache lookup. `ProviderUsageBar` shows only enabled rows, and highest usage
+  uses that same set. Account management keeps the complete inventory and is
+  the single place to enable or disable providers/accounts.
+  `notifyAccountRoutingChanged()` emits a same-tab event and a storage signal
+  after successful settings saves; `useProviderUsage` refreshes immediately or
+  on visibility/network return, coalescing changes during an in-flight fetch.
 
 ### Saved rate-limit resets (`lib/provider-usage.ts`, `components/ProviderUsageBar.tsx`)
 - The usage report's `resetCredits` (Codex / Claude only) becomes
-  `ProviderUsageReport.resets`: count, dated credits, `spendable`, omp's
-  `reason` (Claude's `not_at_wall`: its resets only apply at the limit).
-- Spending goes through `omp usage reset <provider>/<credentialId> --redact`,
+  `ProviderUsageReport.resets`: count, `nextCreditId`, dated credits (`id`,
+  `clears`, `remainingCount`, `usable`, `title`), `spendable`, omp's `reason`
+  (Claude's `not_at_wall`: its resets only apply at the limit). Each usable
+  grant shows its scope pill (`5H`, `5H + Fable`, `Full (5H+7D)`); when an
+  account has 2+ usable grants with `id`s, rows expose per-card **Use** buttons
+  and the confirmation dialog renders a radio card selector (`creditId`), while
+  non-usable banked grants show as `queued`. Stored logins in `omp usage --json`'s
+  `accountsWithoutUsage` merge as `noUsageData: true` rows (`—` in the usage
+  bar) so transient `/usage` 429s never hide connected accounts.
+- Spending goes through `omp usage reset <provider>/<credentialId>[/<creditId>] --redact`,
   never a direct provider call: omp fences the spend against other omp
-  processes and confirms it. The browser only sends the opaque `accountKey`;
-  the server maps it to omp's credential id via `omp usage reset --json`
-  (same account-id/email identity as the key). omp's sentence comes back as
-  `{ok, message}` (stderr + exit 1 = refused/unconfirmed).
-- After a spend the server runs `omp usage invalidate --provider` and bumps
-  `usageGeneration` so neither omp's nor our cached snapshot shows the
-  reset as unspent; the panel then calls the hook's `refresh()`.
+  processes and confirms it. The browser sends the opaque `accountKey` (plus
+  optional `creditId` validated by `PROVIDER_RESET_CREDIT_ID_RE`); the server
+  maps `accountKey` to omp's credential id via `omp usage reset --json`. omp's
+  sentence comes back as `{ok, message}` (stderr + exit 1 = refused/unconfirmed).
+- `omp usage reset` invalidates omp's own per-credential cache (`invalidateAfterReset`,
+  preserving peer accounts' `resetCredits`), so omp-web only calls
+  `invalidateProviderUsage()` (`usageGeneration` bump) rather than running a
+  provider-wide `omp usage invalidate` that would wipe peer accounts' cached resets;
+  the panel then calls the hook's `refresh()`.
 
 ### Composer word prediction (`hooks/useWordPrediction.ts`, `components/GhostMirror.tsx`)
 - Ghost text comes from omp's `predict_word` RPC (engine = omp's
@@ -610,6 +814,8 @@ handled or safely ignored.
 
 ### Completion sound
 - `hooks/useAudio.ts` stores the toggle in `localStorage` and reuses one `AudioContext`.
+  `playAttentionSound()` (same toggle, three higher notes) chimes for new attention
+  items (AppShell) and the agent `notify` host tool.
 - Browser autoplay policy means sound must be unlocked from a user gesture; `ChatInput` calls the unlock hook from interactive controls, and `ChatWindow` plays the tone from `onAgentEnd`.
 
 ## omp Session File Format (v3)
@@ -656,8 +862,12 @@ motion: --dur-fast (150ms) --dur-med (220ms) --dur-slow (320ms) --ease-out-warm
 ```
 
 `components/ui/` holds the shared primitives (built on `@base-ui/react`):
-`primitives.tsx` (Dialog/Tooltip/Collapsible), `field.tsx` (form fields +
-ConfirmDialog), `toast.tsx` (`toast.success/error/info`, mounted in AppShell).
+`primitives.tsx` (Dialog/Tooltip/Collapsible, and `InfoHint`: the "?" for
+secondary explanations — opens on hover with a pointer, tap toggles on touch;
+its popup is portaled, so custom outside-click handlers must ignore
+`.info-hint-popup`), `field.tsx` (form fields + ConfirmDialog, ToggleSwitch,
+TagInput), `toast.tsx` (`toast.success/error/info`, mounted in AppShell).
+Short condition/behavior badges use the `.hint-chip` class.
 Icons come from `lucide-react` — do not add new inline SVGs. The command
 palette (`components/CommandPalette.tsx`, ⌘K/Ctrl+K) is built on `cmdk`.
 

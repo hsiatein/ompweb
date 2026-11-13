@@ -4,6 +4,7 @@ import { useMemo } from "react";
 import { useI18n } from "@/lib/i18n";
 import { parseUnifiedPatch, type SplitDiffCell } from "@/lib/patch";
 import type { ToolResultMessage } from "@/lib/types";
+import { LinkifiedText } from "./LinkifiedText";
 
 export interface ResultDiff {
   text: string;
@@ -233,16 +234,18 @@ function PatchTextView({ text }: { text: string }) {
   );
 }
 
-export function PairedResult({ text, isEmpty, isError }: {
+export function PairedResult({ text, isEmpty, isError, cwd, onOpenFile }: {
   text: string;
   isEmpty: boolean;
   isError: boolean;
+  cwd?: string;
+  onOpenFile?: (filePath: string) => void;
 }) {
   const { t } = useI18n();
   return (
     <div className={`tool-call-output${isError ? " tool-call-output-error" : ""}`}>
       <pre className="tool-call-output-text" data-tool-output="true">
-        {isEmpty ? t("messageView.noOutput") : text}
+        {isEmpty ? t("messageView.noOutput") : <LinkifiedText text={text} cwd={cwd} onOpenFile={onOpenFile} />}
       </pre>
     </div>
   );

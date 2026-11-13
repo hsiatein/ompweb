@@ -57,7 +57,7 @@ export function WallpaperBackground() {
       {p.kind === "web"
         ? <WebWallpaper key={p.id} id={p.id} paused={p.paused} volume={p.volume} muted={p.muted || !!p.bgmId} style={mediaStyle} onReady={ready} onError={message => { setSceneError(message); setFailedId(p.id); }} />
         : p.kind === "scene"
-        ? <SceneWallpaper key={p.id} id={p.id} paused={p.paused} volume={p.volume} muted={p.muted} bgm={p.bgmId ? bgmUrl(p.bgmId) : null} onReady={ready} onError={message => { setSceneError(message); setFailedId(p.id); }} style={mediaStyle} />
+        ? <SceneWallpaper key={p.id} id={p.id} paused={p.paused} form={p.sceneForms[p.id] ?? ""} volume={p.volume} muted={p.muted} bgm={p.bgmId ? bgmUrl(p.bgmId) : null} onReady={ready} onError={message => { setSceneError(message); setFailedId(p.id); }} style={mediaStyle} />
         : p.kind === "video"
         ? <video key={p.id} ref={video} src={wallpaperUrl(p.id)} muted={p.muted || !!p.bgmId} loop playsInline preload="auto" onLoadedData={ready} onError={() => setFailedId(p.id)} style={mediaStyle} />
         // Keep animated raster files intact instead of re-encoding via Next Image.

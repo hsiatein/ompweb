@@ -11,8 +11,8 @@ function declaredContentLength(request: Request): number | null {
   return Number.isSafeInteger(length) ? length : null;
 }
 
-/** Read a UTF-8 body without allowing chunked bodies to bypass the limit. */
-export async function readTextWithinLimit(request: Request, maxBytes: number): Promise<string> {
+/** Read the raw body without allowing chunked bodies to bypass the limit. */
+export async function readBytesWithinLimit(request: Request, maxBytes: number): Promise<Uint8Array> {
   const declared = declaredContentLength(request);
   if (declared !== null && declared > maxBytes) {
     throw new RequestBodyTooLargeError();
@@ -20,9 +20,9 @@ export async function readTextWithinLimit(request: Request, maxBytes: number): P
 
   const reader = request.body?.getReader();
   if (!reader) {
-    const text = await request.text();
-    if (Buffer.byteLength(text, "utf8") > maxBytes) throw new RequestBodyTooLargeError();
-    return text;
+    const bytes = new Uint8Array(await request.arrayBuffer());
+    if (bytes.byteLength > maxBytes) throw new RequestBodyTooLargeError();
+    return bytes;
   }
 
   const chunks: Uint8Array[] = [];
@@ -50,7 +50,12 @@ export async function readTextWithinLimit(request: Request, maxBytes: number): P
     bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  return bytes;
+}
+
+/** Read a UTF-8 body without allowing chunked bodies to bypass the limit. */
+export async function readTextWithinLimit(request: Request, maxBytes: number): Promise<string> {
+  return new TextDecoder("utf-8", { fatal: true }).decode(await readBytesWithinLimit(request, maxBytes));
 }
 
 /** Read UTF-8 JSON input without allowing chunked bodies to bypass the limit. */

@@ -32,11 +32,20 @@ declare global {
   var __ompResumeTracker: TrackerState | undefined;
 }
 
+// A dev server (`next dev`) usually shares the agent dir with the installed
+// service. The list on disk is then the live service's, not a previous run's:
+// claiming it would delete it and start a second omp on sessions the service
+// is running (omp forks a locked session, so each start left a duplicate
+// session behind). Only a production server tracks and resumes.
+function resumeEnabled(): boolean {
+  return process.env.NODE_ENV === "production";
+}
+
 // On globalThis so it survives Next.js hot-reload and is shared by every
 // bundle that imports this module. Created on first use, which claims the
 // previous run's list before anything in this run can overwrite it.
 function tracker(): TrackerState {
-  globalThis.__ompResumeTracker ??= { leftover: readLeftover(), sessions: new Map(), drops: new Map(), shuttingDown: false };
+  globalThis.__ompResumeTracker ??= { leftover: resumeEnabled() ? readLeftover() : [], sessions: new Map(), drops: new Map(), shuttingDown: false };
   return globalThis.__ompResumeTracker;
 }
 
@@ -85,7 +94,7 @@ function writeInterrupted(sessions: InterruptibleSession[]): void {
  */
 export function recordRunningSessions(running: InterruptibleSession[], isAlive: (id: string) => boolean): void {
   const state = tracker();
-  if (state.shuttingDown) return;
+  if (state.shuttingDown || !resumeEnabled()) return;
   if (!loadWebServerSettings().autoResumeSessions) {
     if (state.sessions.size > 0 || state.drops.size > 0) {
       for (const timer of state.drops.values()) clearTimeout(timer);

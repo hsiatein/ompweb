@@ -15,6 +15,8 @@ export type ScheduleRepeat =
   | { kind: "webhook" };
 
 export const MIN_INTERVAL_MINUTES = 5;
+/** Suggested port for a webhook's dedicated listener (omp-web itself defaults to 30177). */
+export const DEFAULT_WEBHOOK_LISTEN_PORT = 30179;
 export const MAX_INTERVAL_MINUTES = 30 * 24 * 60;
 
 const TIME_RE = /^([01]\d|2[0-3]):([0-5]\d)$/;

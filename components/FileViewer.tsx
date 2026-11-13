@@ -18,9 +18,12 @@ import {
   DOCX_PREVIEW_MAX_BYTES,
   getFileExt,
   isAudioPath,
+  isVideoPath,
   isDocumentPreviewPath,
   isImagePath,
+  TEXT_HIGHLIGHT_MAX_BYTES,
 } from "@/lib/file-types";
+import { formatBytes } from "@/lib/system-monitor-types";
 import { getFileDirectory, getFileName, getRelativeFilePath } from "@/lib/file-paths";
 import { getFileApiUrl, markdownFileUrlTransform } from "@/lib/file-urls";
 import { translate, useI18n } from "@/lib/i18n";
@@ -36,6 +39,7 @@ import type { GitFileDiffResponse } from "@/lib/git-types";
 import { parseFrontmatter } from "@/lib/frontmatter";
 import { FrontmatterCard } from "./FrontmatterCard";
 import { FileTextEditor } from "./FileTextEditor";
+import { DelimitedPreview, NotebookPreview } from "./FilePreviews";
 import type { FileEditorStatus } from "@/lib/file-editing";
 
 interface Props {
@@ -551,7 +555,13 @@ function formatDuration(seconds: number): string {
   return `${mins}:${String(secs).padStart(2, "0")}`;
 }
 
-function AudioViewer({ filePath, cwd, sourceSessionId, active = true }: Props) {
+/** Languages whose rendered view (table, notebook, Markdown) opens first. */
+const PREVIEW_FIRST_LANGUAGES = new Set(["markdown", "csv", "tsv", "ipynb"]);
+/** Highlighter grammar for languages the file API names differently or has no grammar for. */
+const HIGHLIGHT_LANGUAGE: Record<string, string> = { text: "plaintext", csv: "plaintext", tsv: "plaintext", ipynb: "json" };
+
+/** Audio and video files: streamed with range requests into the browser's own player. */
+function MediaViewer({ filePath, cwd, sourceSessionId, active = true, kind }: Props & { kind: "audio" | "video" }) {
   const { t } = useI18n();
   const [watching, setWatching] = useState(false);
   const [bust, setBust] = useState(0);
@@ -624,7 +634,7 @@ function AudioViewer({ filePath, cwd, sourceSessionId, active = true }: Props) {
         <span style={{ fontFamily: "var(--font-mono)" }} title={filePath}>
           {getRelativeFilePath(filePath, cwd)}
         </span>
-        <span style={{ marginLeft: "auto" }}>{ext || t("fileViewer.audioType")}</span>
+        <span style={{ marginLeft: "auto" }}>{ext || t(kind === "video" ? "fileViewer.videoType" : "fileViewer.audioType")}</span>
         {duration != null && <span>{formatDuration(duration)}</span>}
         {size != null && <span>{formatSize(size)}</span>}
         <span
@@ -648,29 +658,42 @@ function AudioViewer({ filePath, cwd, sourceSessionId, active = true }: Props) {
       <div
         style={{
           flex: 1,
+          minHeight: 0,
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
-          padding: 24,
+          padding: kind === "video" ? 12 : 24,
           background: "var(--bg-panel)",
         }}
       >
-        <div style={{ width: "min(680px, 100%)" }}>
+        <div style={kind === "video" ? { width: "100%", height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 0 } : { width: "min(680px, 100%)" }}>
           {error && (
             <div role="alert" style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, color: "var(--status-error)", fontSize: 13, marginBottom: 12, textAlign: "center" }}>
               <span>{error}</span>
               <button type="button" className="load-retry-button" onClick={retry} style={{ minHeight: 32, padding: "4px 8px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 11, fontWeight: 600 }}>{t("chatWindow.retry")}</button>
             </div>
           )}
-          <audio
-            key={src}
-            controls
-            preload="metadata"
-            src={src}
-            onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
-            onError={() => setError(t("fileViewer.audioLoadFailed"))}
-            style={{ width: "100%" }}
-          />
+          {kind === "video" ? (
+            <video
+              key={src}
+              controls
+              preload="metadata"
+              src={src}
+              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+              onError={() => setError(t("fileViewer.videoLoadFailed"))}
+              style={{ maxWidth: "100%", maxHeight: "100%", minHeight: 0, background: "#000", borderRadius: "var(--radius-control)" }}
+            />
+          ) : (
+            <audio
+              key={src}
+              controls
+              preload="metadata"
+              src={src}
+              onLoadedMetadata={(e) => setDuration(e.currentTarget.duration)}
+              onError={() => setError(t("fileViewer.audioLoadFailed"))}
+              style={{ width: "100%" }}
+            />
+          )}
         </div>
       </div>
     </div>
@@ -824,7 +847,10 @@ export function FileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMenti
     return <ImageViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} active={active} />;
   }
   if (isAudioPath(filePath)) {
-    return <AudioViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} active={active} />;
+    return <MediaViewer kind="audio" filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} active={active} />;
+  }
+  if (isVideoPath(filePath)) {
+    return <MediaViewer kind="video" filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} active={active} />;
   }
   if (isDocumentPreviewPath(filePath)) {
     return <DocumentViewer filePath={filePath} cwd={cwd} sourceSessionId={sourceSessionId} active={active} />;
@@ -864,6 +890,12 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const [gitDiff, setGitDiff] = useState<GitFileDiffResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  /** A text file over the auto-load limit: shown with a "Load anyway" button instead of an error. */
+  const [largeFile, setLargeFile] = useState<{ size: number; limit: number; forceLimit: number; forceable: boolean } | null>(null);
+  /** Set once the user asked to load this large file; reloads (file watch) keep using it. */
+  const forceLoadRef = useRef(false);
+  /** Size of a file the server identified as binary: offered as a download instead of shown. */
+  const [binarySize, setBinarySize] = useState<number | null>(null);
   const [highlightReady, setHighlightReady] = useState(true);
 
   // Load the PrismLight grammar for this file's language on demand instead of
@@ -892,15 +924,29 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     // resolve that is no longer the latest fetch for this component, so a
     // slower older request cannot overwrite newer content/error state.
     const requestId = ++contentRequestRef.current;
-    return fetch(getFileApiUrl(filePath, "read", sourceSessionId))
+    return fetch(getFileApiUrl(filePath, "read", sourceSessionId, forceLoadRef.current ? { force: 1 } : undefined))
       .then((r) => r.json())
-      .then((d: FileData & { error?: string }) => {
+      .then((d: FileData & { error?: string; code?: string; size?: number; limit?: number; forceLimit?: number; forceable?: boolean }) => {
         if (requestId !== contentRequestRef.current) return null;
+        if (d.code === "binary_file" && typeof d.size === "number") {
+          setError(null);
+          setData(null);
+          setBinarySize(d.size);
+          return null;
+        }
+        if (d.code === "file_too_large_preview" && typeof d.size === "number" && typeof d.limit === "number") {
+          setError(null);
+          setData(null);
+          setLargeFile({ size: d.size, limit: d.limit, forceLimit: d.forceLimit ?? 0, forceable: d.forceable === true });
+          return null;
+        }
         if (d.error) {
           setError(formatApiError(d));
           return null;
         }
         setError(null);
+        setLargeFile(null);
+        setBinarySize(null);
         setData(d);
         return d;
       })
@@ -913,6 +959,12 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
   const retryContent = useCallback(() => {
     setLoading(true);
     setError(null);
+    void fetchContent(filePath).finally(() => setLoading(false));
+  }, [fetchContent, filePath]);
+  const loadLargeFile = useCallback(() => {
+    forceLoadRef.current = true;
+    setLargeFile(null);
+    setLoading(true);
     void fetchContent(filePath).finally(() => setLoading(false));
   }, [fetchContent, filePath]);
 
@@ -942,8 +994,10 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     }
     setLoading(true);
     setError(null);
+    setLargeFile(null);
+    setBinarySize(null);
+    forceLoadRef.current = false;
     setData(null);
-    setGitDiff(null);
     setDisplayMode("source");
     setWrapLines(false);
     setWatching(false);
@@ -958,7 +1012,7 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     let cancelled = false;
     void fetchContent(filePath).then((d) => {
       if (cancelled) return;
-      if (d?.language === "markdown") setDisplayMode("preview");
+      if (d && PREVIEW_FIRST_LANGUAGES.has(d.language)) setDisplayMode("preview");
     }).finally(() => {
       if (!cancelled) setLoading(false);
     });
@@ -1105,11 +1159,49 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
     );
   }
 
+  if (binarySize !== null) {
+    return (
+      <div role="status" style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 24, color: "var(--text-muted)", fontSize: 13, textAlign: "center" }}>
+        <div>{t("fileViewer.binaryFile", { name: getFileName(filePath), size: formatBytes(binarySize) })}</div>
+        <a
+          href={getFileApiUrl(filePath, "download", sourceSessionId)}
+          download={getFileName(filePath)}
+          style={{ display: "inline-flex", alignItems: "center", gap: 6, minHeight: 36, padding: "6px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", fontSize: 12, fontWeight: 600, textDecoration: "none" }}
+        >
+          <Download size={14} strokeWidth={2.2} aria-hidden="true" />{t("fileViewer.downloadFile")}
+        </a>
+      </div>
+    );
+  }
+
+  if (largeFile) {
+    return (
+      <div role="status" style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, padding: 24, color: "var(--text-muted)", fontSize: 13, textAlign: "center" }}>
+        <div>
+          {largeFile.forceable
+            ? t("fileViewer.largeFileNotLoaded", { size: formatBytes(largeFile.size), limit: formatBytes(largeFile.limit) })
+            : t("fileViewer.largeFileTooBig", { size: formatBytes(largeFile.size), limit: formatBytes(largeFile.forceLimit) })}
+        </div>
+        {largeFile.forceable && (
+          <button
+            type="button"
+            onClick={loadLargeFile}
+            style={{ minHeight: 36, padding: "6px 12px", border: "1px solid var(--border)", borderRadius: "var(--radius-control)", background: "var(--bg-panel)", color: "var(--text)", cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+          >
+            {t("fileViewer.loadAnyway")}
+          </button>
+        )}
+      </div>
+    );
+  }
+
   if (!data) return null;
 
   const isHtml = data.language === "html";
   const isMarkdown = data.language === "markdown";
-  const hasPreview = isHtml || isMarkdown;
+  const delimiter = data.language === "csv" ? "," : data.language === "tsv" ? "\t" : null;
+  const isNotebook = data.language === "ipynb";
+  const hasPreview = isHtml || isMarkdown || delimiter !== null || isNotebook;
   const markdownDirectory = getFileDirectory(filePath);
   const lines = data.content.split("\n");
   const displayModes: DisplayMode[] = [
@@ -1243,6 +1335,10 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
       <div ref={contentRef} data-selection-scope="document" tabIndex={-1} className="file-viewer-content" style={{ flex: 1, overflow: "auto", background: "var(--bg)" }}>
         {displayMode === "diff" && hasGitDiff ? (
           <DiffView patch={gitDiff.patch!} />
+        ) : delimiter !== null && displayMode === "preview" ? (
+          <DelimitedPreview content={data.content} delimiter={delimiter} />
+        ) : isNotebook && displayMode === "preview" ? (
+          <NotebookPreview content={data.content} />
         ) : isHtml && displayMode === "preview" ? (
           <iframe
             srcDoc={data.content}
@@ -1298,10 +1394,10 @@ function TextFileViewer({ filePath, cwd, sourceSessionId, onOpenFile, onMentionL
               {markdownPreview}
             </ReactMarkdown>
           </div>
-        ) : highlightReady ? (
+        ) : highlightReady && data.size <= TEXT_HIGHLIGHT_MAX_BYTES ? (
           <SyntaxHighlighter
             className={wrapLines ? "file-source-view wallpaper-surface is-wrapped" : "file-source-view wallpaper-surface"}
-            language={data.language === "text" ? "plaintext" : data.language}
+            language={HIGHLIGHT_LANGUAGE[data.language] ?? data.language}
             style={isDark ? vscDarkPlus : vs}
             showLineNumbers
             lineNumberStyle={{

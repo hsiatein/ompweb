@@ -1,12 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Check, ChevronRight, Gauge, Pencil, RotateCcw, X } from "lucide-react";
+import { ChevronRight, Gauge, RotateCcw } from "lucide-react";
 import { useI18n } from "@/lib/i18n";
 import { toast } from "@/components/ui/toast";
-import { ConfirmDialog } from "@/components/ui/field";
-import { formatUsageReset, usageTone, useProviderUsage } from "./AppShell-provider-usage";
-import { PROVIDER_ACCOUNT_ALIAS_MAX_LENGTH } from "@/lib/provider-usage-types";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/primitives";
+import { formatUsageReset, listBankedResetCredits, RESET_SCOPE_I18N_KEYS, usageSourceName, usageTone, useProviderUsage } from "./AppShell-provider-usage";
 import type { ProviderCreditBalance, ProviderResets, ProviderUsageReport, ProviderUsageWindow } from "@/lib/provider-usage-types";
 
 interface WindowDef {
@@ -79,119 +78,6 @@ function DetailMeter({ short, window, t }: {
   );
 }
 
-const aliasIconButtonStyle = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  width: 22,
-  height: 22,
-  flexShrink: 0,
-  padding: 0,
-  background: "none",
-  border: "1px solid var(--border)",
-  borderRadius: 4,
-  color: "var(--text-muted)",
-  cursor: "pointer",
-} as const;
-
-// Names an account so several logins of one provider are told apart. Saved
-// server-side (omp-web-settings.json) so every browser sees the same names.
-function AccountAliasEditor({ accountKey, alias, original, onSaved, t }: {
-  accountKey: string;
-  alias: string | undefined;
-  original: string;
-  onSaved: (accountKey: string, alias: string | null) => void;
-  t: (key: string, vars?: Record<string, string | number>) => string;
-}) {
-  const [draft, setDraft] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const save = async () => {
-    if (draft === null || saving) return;
-    setSaving(true);
-    try {
-      const response = await fetch("/api/provider-usage/aliases", {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountKey, alias: draft }),
-      });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      const saved = await response.json() as { alias: string | null };
-      onSaved(accountKey, saved.alias);
-      setDraft(null);
-    } catch {
-      toast.error(t("providerUsage.aliasSaveFailed"));
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  if (draft === null) {
-    return (
-      <span style={{ display: "flex", alignItems: "center", gap: 6, fontFamily: "inherit", fontSize: 10, color: "var(--text-dim)", minWidth: 0 }}>
-        <button
-          type="button"
-          onClick={() => setDraft(alias ?? "")}
-          style={{ display: "flex", alignItems: "center", gap: 4, padding: 0, background: "none", border: "none", color: "var(--text-muted)", cursor: "pointer", fontSize: 10, fontFamily: "inherit", flexShrink: 0 }}
-        >
-          <Pencil size={10} strokeWidth={2} aria-hidden="true" />
-          {t(alias ? "providerUsage.aliasEdit" : "providerUsage.aliasSet")}
-        </button>
-        {alias && (
-          <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", minWidth: 0 }}>
-            {t("providerUsage.aliasOriginal", { label: original })}
-          </span>
-        )}
-      </span>
-    );
-  }
-
-  return (
-    <form
-      onSubmit={(event) => {
-        event.preventDefault();
-        void save();
-      }}
-      style={{ display: "flex", alignItems: "center", gap: 4, minWidth: 0 }}
-    >
-      <input
-        autoFocus
-        value={draft}
-        maxLength={PROVIDER_ACCOUNT_ALIAS_MAX_LENGTH}
-        disabled={saving}
-        placeholder={t("providerUsage.aliasPlaceholder")}
-        aria-label={t("providerUsage.aliasSet")}
-        onChange={(event) => setDraft(event.target.value)}
-        onKeyDown={(event) => {
-          if (event.key !== "Escape") return;
-          event.preventDefault();
-          event.stopPropagation();
-          setDraft(null);
-        }}
-        style={{
-          flex: 1,
-          minWidth: 0,
-          height: 22,
-          boxSizing: "border-box",
-          padding: "0 6px",
-          fontSize: 11,
-          fontFamily: "inherit",
-          color: "var(--text)",
-          background: "var(--bg)",
-          border: "1px solid var(--accent)",
-          borderRadius: 4,
-          outline: "none",
-        }}
-      />
-      <button type="submit" disabled={saving} aria-label={t("providerUsage.aliasSave")} title={t("providerUsage.aliasSave")} style={aliasIconButtonStyle}>
-        <Check size={12} strokeWidth={2} aria-hidden="true" />
-      </button>
-      <button type="button" disabled={saving} onClick={() => setDraft(null)} aria-label={t("providerUsage.aliasCancel")} title={t("providerUsage.aliasCancel")} style={aliasIconButtonStyle}>
-        <X size={12} strokeWidth={2} aria-hidden="true" />
-      </button>
-    </form>
-  );
-}
 
 const RESET_REASON_KEYS: Record<string, string> = {
   not_at_wall: "providerUsage.resetReasonNotAtWall",
@@ -201,7 +87,7 @@ const RESET_REASON_KEYS: Record<string, string> = {
 
 // Saved Codex / Claude rate-limit resets: how many, when they expire, and a
 // button that spends one through `omp usage reset` after a confirmation.
-function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: {
+export function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: {
   resets: ProviderResets;
   accountKey: string;
   account: string;
@@ -212,12 +98,22 @@ function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: 
   t: (key: string, vars?: Record<string, string | number>) => string;
 }) {
   const [confirming, setConfirming] = useState(false);
+  const [selectedCreditId, setSelectedCreditId] = useState<string | undefined>(undefined);
   const [spending, setSpending] = useState(false);
   const formatTime = (ms: number) => new Date(ms).toLocaleString(locale, { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" });
-  const expiries = resets.credits.flatMap((credit) =>
-    (credit.status ?? "available") === "available" && credit.expiresAt !== undefined && (now === null || credit.expiresAt > now) ? [credit.expiresAt] : [],
-  ).sort((a, b) => a - b);
-  // A cooldown without an end time reads as an unknown reason.
+  const formatExpiry = (expiresAt: number) => now !== null
+    ? t("providerUsage.resetExpiresIn", { value: formatUsageReset(Math.max(0, Math.round((expiresAt - now) / 3_600_000)), "hours"), time: formatTime(expiresAt) })
+    : t("providerUsage.resetExpiresAt", { time: formatTime(expiresAt) });
+  const banked = listBankedResetCredits(resets, now);
+  const selectableCredits = banked.filter((credit) => credit.canSpend && Boolean(credit.id));
+  const hasChoice = selectableCredits.length > 1;
+  const defaultCredit = banked.find((credit) => credit.nextToSpend) ?? selectableCredits[0];
+  const activeChoice = (selectedCreditId ? selectableCredits.find((credit) => credit.id === selectedCreditId) : undefined) ?? defaultCredit;
+  const activeCardParts = [
+    activeChoice?.scope ? t(RESET_SCOPE_I18N_KEYS[activeChoice.scope]) : undefined,
+    activeChoice?.title,
+  ].filter((part): part is string => Boolean(part));
+  const activeCardSummary = activeCardParts.length > 0 ? activeCardParts.join(" · ") : null;
   const reasonKey = resets.reason && !(resets.reason === "cooldown" && resets.cooldownUntil === undefined) ? RESET_REASON_KEYS[resets.reason] : undefined;
   // Known reasons explain an empty count too (Claude offers none below its limit).
   const reason = resets.spendable || !resets.reason
@@ -226,13 +122,18 @@ function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: 
       ? t(reasonKey, { time: resets.cooldownUntil !== undefined ? formatTime(resets.cooldownUntil) : "" })
       : resets.available > 0 ? t("providerUsage.resetReasonOther", { reason: resets.reason }) : null;
 
-  const spend = async () => {
+  const openConfirm = (creditId?: string) => {
+    setSelectedCreditId(creditId ?? defaultCredit?.id);
+    setConfirming(true);
+  };
+
+  const spend = async (creditId?: string) => {
     setSpending(true);
     try {
       const response = await fetch("/api/provider-usage/reset", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ accountKey }),
+        body: JSON.stringify(creditId ? { accountKey, creditId } : { accountKey }),
       });
       const data = await response.json().catch(() => null) as { ok?: unknown; message?: unknown; error?: unknown } | null;
       if (!response.ok || typeof data?.ok !== "boolean") {
@@ -248,7 +149,6 @@ function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: 
       onSpent();
     }
   };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 3, fontSize: 10, color: "var(--text-muted)" }}>
       <span style={{ display: "flex", alignItems: "center", gap: 6, minHeight: 20 }}>
@@ -260,7 +160,7 @@ function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: 
           <button
             type="button"
             disabled={!resets.spendable || spending}
-            onClick={() => setConfirming(true)}
+            onClick={() => openConfirm()}
             title={reason ?? undefined}
             style={{
               flexShrink: 0,
@@ -276,31 +176,178 @@ function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: 
               fontWeight: 600,
             }}
           >
-            {spending ? t("providerUsage.resetUsing") : t("providerUsage.resetUse")}
+            {spending ? t("providerUsage.resetUsing") : t(hasChoice ? "providerUsage.resetChoose" : "providerUsage.resetUse")}
           </button>
         )}
       </span>
-      {expiries.map((expiresAt, index) => (
-        <span key={`${expiresAt}-${index}`} style={{ paddingLeft: 16, color: "var(--text-dim)", overflowWrap: "anywhere" }}>
-          {now !== null
-            ? t("providerUsage.resetExpiresIn", { value: formatUsageReset(Math.max(0, Math.round((expiresAt - now) / 3_600_000)), "hours"), time: formatTime(expiresAt) })
-            : t("providerUsage.resetExpiresAt", { time: formatTime(expiresAt) })}
-        </span>
-      ))}
+      {banked.map((credit, index) => {
+        const scopeLabel = credit.scope ? t(RESET_SCOPE_I18N_KEYS[credit.scope]) : null;
+        const countSuffix = (credit.remainingCount ?? 1) > 1 ? ` ×${credit.remainingCount}` : "";
+        const expiryLabel = credit.expiresAt !== undefined
+          ? formatExpiry(credit.expiresAt)
+          : (!scopeLabel ? credit.title ?? null : null);
+        if (!scopeLabel && !expiryLabel) return null;
+        const canPickThis = hasChoice && credit.canSpend && Boolean(credit.id);
+        return (
+          <span
+            key={`${credit.id ?? credit.expiresAt ?? "no-exp"}-${index}`}
+            title={credit.title}
+            style={{ paddingLeft: 16, display: "flex", alignItems: "center", flexWrap: "wrap", gap: 5, color: "var(--text-dim)", overflowWrap: "anywhere" }}
+          >
+            {scopeLabel && (
+              <span
+                style={{
+                  fontSize: 9,
+                  fontWeight: 700,
+                  padding: "0 5px",
+                  borderRadius: 4,
+                  lineHeight: 1.6,
+                  border: "1px solid var(--border)",
+                  background: credit.canSpend ? "var(--bg-selected)" : "var(--bg)",
+                  color: credit.canSpend ? "var(--accent)" : "var(--text-muted)",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {scopeLabel}{countSuffix}
+              </span>
+            )}
+            {expiryLabel && <span style={{ flex: "1 1 auto", minWidth: 0 }}>{expiryLabel}</span>}
+            {credit.queued && <span style={{ color: "var(--text-dim)" }}>· {t("providerUsage.resetQueued")}</span>}
+            {canPickThis && (
+              <button
+                type="button"
+                disabled={spending}
+                onClick={() => openConfirm(credit.id)}
+                style={{
+                  marginLeft: "auto",
+                  flexShrink: 0,
+                  height: 18,
+                  padding: "0 6px",
+                  border: "1px solid var(--border)",
+                  borderRadius: 4,
+                  background: "var(--bg)",
+                  color: spending ? "var(--text-dim)" : "var(--accent)",
+                  cursor: spending ? "default" : "pointer",
+                  fontSize: 9,
+                  fontFamily: "inherit",
+                  fontWeight: 600,
+                }}
+              >
+                {t("providerUsage.resetUseThis")}
+              </button>
+            )}
+          </span>
+        );
+      })}
       {reason && <span style={{ paddingLeft: 16, color: "var(--text-dim)", overflowWrap: "anywhere" }}>{reason}</span>}
-      <ConfirmDialog
-        open={confirming}
-        onOpenChange={setConfirming}
-        title={<span style={{ overflowWrap: "anywhere" }}>{t("providerUsage.resetConfirmTitle", { account })}</span>}
-        description={t("providerUsage.resetConfirmBody")}
-        confirmLabel={t("providerUsage.resetConfirm")}
-        cancelLabel={t("providerUsage.aliasCancel")}
-        busy={spending}
-        onConfirm={() => {
-          setConfirming(false);
-          void spend();
-        }}
-      />
+      <Dialog open={confirming} onOpenChange={setConfirming}>
+        <DialogContent
+          style={{ width: 440, maxWidth: "min(92vw, 440px)", padding: 22, display: "flex", flexDirection: "column", gap: 12, overflow: "hidden" }}
+        >
+          <DialogTitle>
+            <span style={{ overflowWrap: "anywhere" }}>{t("providerUsage.resetConfirmTitle", { account })}</span>
+          </DialogTitle>
+          {hasChoice ? (
+            <div role="radiogroup" aria-label={t("providerUsage.resetSelectLabel")} style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              <span style={{ fontSize: 12, color: "var(--text-muted)", fontWeight: 600 }}>
+                {t("providerUsage.resetSelectLabel")}
+              </span>
+              {selectableCredits.map((credit) => {
+                const checked = activeChoice?.id === credit.id;
+                const scopeLabel = credit.scope ? t(RESET_SCOPE_I18N_KEYS[credit.scope]) : (credit.id ?? "");
+                const countSuffix = (credit.remainingCount ?? 1) > 1 ? ` ×${credit.remainingCount}` : "";
+                return (
+                  <label
+                    key={credit.id}
+                    style={{
+                      display: "flex",
+                      alignItems: "flex-start",
+                      gap: 9,
+                      padding: "8px 10px",
+                      borderRadius: "var(--radius-control)",
+                      border: `1px solid ${checked ? "var(--accent)" : "var(--border)"}`,
+                      background: checked ? "var(--bg-selected)" : "var(--bg-panel)",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name={`reset-credit-${accountKey}`}
+                      checked={checked}
+                      onChange={() => setSelectedCreditId(credit.id)}
+                      style={{ marginTop: 3, accentColor: "var(--accent)", flexShrink: 0 }}
+                    />
+                    <span style={{ display: "flex", flexDirection: "column", gap: 3, minWidth: 0, flex: 1 }}>
+                      <span style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6 }}>
+                        <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", fontWeight: 700, color: checked ? "var(--accent)" : "var(--text)" }}>
+                          {scopeLabel}{countSuffix}
+                        </span>
+                        {credit.expiresAt !== undefined && (
+                          <span style={{ fontSize: 11, color: "var(--text-dim)" }}>
+                            {formatExpiry(credit.expiresAt)}
+                          </span>
+                        )}
+                      </span>
+                      {credit.title && (
+                        <span style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.4, overflowWrap: "anywhere" }}>
+                          {credit.title}
+                        </span>
+                      )}
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          ) : activeCardSummary ? (
+            <div style={{ fontSize: 13, lineHeight: 1.5, color: "var(--text)", fontWeight: 500, overflowWrap: "anywhere" }}>
+              {t("providerUsage.resetConfirmCard", { card: activeCardSummary })}
+            </div>
+          ) : null}
+          <p style={{ margin: 0, fontSize: 13, lineHeight: 1.55, color: "var(--text-muted)" }}>
+            {t("providerUsage.resetConfirmBody")}
+          </p>
+          <div className="dialog-actions" style={{ display: "flex", justifyContent: "flex-end", gap: 8, paddingTop: 4 }}>
+            <button
+              type="button"
+              className="dialog-action"
+              onClick={() => setConfirming(false)}
+              style={{
+                padding: "6px 14px",
+                background: "none",
+                border: "1px solid var(--border)",
+                borderRadius: "var(--radius-control)",
+                color: "var(--text-muted)",
+                cursor: "pointer",
+                fontSize: 13,
+              }}
+            >
+              {t("providerUsage.aliasCancel")}
+            </button>
+            <button
+              type="button"
+              className="dialog-action"
+              disabled={spending}
+              onClick={() => {
+                setConfirming(false);
+                void spend(activeChoice?.id);
+              }}
+              style={{
+                padding: "6px 14px",
+                background: "var(--accent-strong)",
+                border: "none",
+                borderRadius: "var(--radius-control)",
+                color: "var(--on-accent)",
+                cursor: spending ? "wait" : "pointer",
+                fontSize: 13,
+                fontWeight: 600,
+                opacity: spending ? 0.7 : 1,
+              }}
+            >
+              {t("providerUsage.resetConfirm")}
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
@@ -310,10 +357,8 @@ function ResetCredits({ resets, accountKey, account, now, locale, onSpent, t }: 
 export function ProviderUsageBar() {
   const { t, locale } = useI18n();
   const { snapshot, loading, error, refresh } = useProviderUsage("");
-  const reports = snapshot?.reports ?? [];
+  const reports = (snapshot?.reports ?? []).filter(report => !report.disabled);
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  // Aliases saved from this panel, shown until the next snapshot carries them.
-  const [aliasOverrides, setAliasOverrides] = useState<Record<string, string | null>>({});
   // The first render must match the server, where localStorage is unavailable,
   // so start collapsed and apply the stored preference after mounting.
   const [collapsed, setCollapsed] = useState(true);
@@ -402,26 +447,27 @@ export function ProviderUsageBar() {
               ? t("appShell.providerUsageUnavailable")
               : worst
                 ? t("providerUsage.highest", { percent: worst.percent, window: worst.window })
-                : t("appShell.providerUsageNoData")}
+                : t(reports.length === 0 && (snapshot?.reports.length ?? 0) > 0 ? "providerUsage.noEnabledAccounts" : "appShell.providerUsageNoData")}
         </span>
       </button>
       {!collapsed && reports.map((report, index) => {
-        const original = report.accountLabel ?? t("appShell.account", { number: report.accountIndex ?? index + 1 });
-        const alias = report.accountKey in aliasOverrides ? aliasOverrides[report.accountKey] ?? undefined : report.accountAlias;
-        const account = alias ?? original;
-        const rowLabel = report.pool ? `${report.pool} · ${account}` : account;
-        const key = `${report.provider}:${report.accountKey}:${report.modelId ?? "all"}:${report.pool ?? ""}:${index}`;
+        const account = report.accountAlias ?? report.accountLabel ?? t("appShell.account", { number: report.accountIndex ?? index + 1 });
+        // The pool goes into the source chip (antigravity-gemini); the full pool name stays in the tooltip.
+        const rowTitle = report.pool ? `${report.pool} · ${account}` : account;
+        const key = `${report.provider}:${report.accountKey}:${report.modelId ?? "all"}:${report.tier ?? ""}:${report.pool ?? ""}`;
         const best = worstWindow(report);
-        const expanded = expandedKey === key;
+        const canExpand = Boolean(report.credits || (!report.noLimits && best) || report.resets);
+        const expanded = canExpand && expandedKey === key;
+        const Row = canExpand ? "button" : "div";
         const pct = best ? Math.round(best.window.percent) : 0;
         const tone = usageTone(pct);
         return (
           <div key={key} className="provider-usage-account" style={{ borderRadius: "var(--radius-control)", background: expanded ? "var(--bg-subtle)" : "transparent" }}>
-            <button
-              type="button"
-              onClick={() => setExpandedKey((prev) => (prev === key ? null : key))}
-              aria-expanded={expanded}
-              title={alias ? `${rowLabel} (${original})` : rowLabel}
+            <Row
+              type={canExpand ? "button" : undefined}
+              onClick={canExpand ? () => setExpandedKey((prev) => (prev === key ? null : key)) : undefined}
+              aria-expanded={canExpand ? expanded : undefined}
+              title={rowTitle}
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -431,7 +477,7 @@ export function ProviderUsageBar() {
                 padding: "5px 6px 4px",
                 background: "none",
                 border: "none",
-                cursor: "pointer",
+                cursor: canExpand ? "pointer" : "default",
                 textAlign: "left",
                 minWidth: 0,
               }}
@@ -442,27 +488,36 @@ export function ProviderUsageBar() {
                 aria-hidden="true"
                 style={{
                   flexShrink: 0,
+                  visibility: canExpand ? "visible" : "hidden",
                   color: "var(--text-dim)",
                   transform: expanded ? "rotate(90deg)" : "none",
                   transition: "transform var(--dur-med) var(--ease-out-warm)",
                 }}
               />
               <span className="provider-usage-name wallpaper-inset" style={{ fontFamily: "var(--font-mono)", fontWeight: 700, fontSize: 10, color: "var(--text)", background: "var(--bg)", border: "1px solid var(--border)", padding: "0 5px", borderRadius: 4, whiteSpace: "nowrap", flexShrink: 0, lineHeight: 1.7 }}>
-                {report.provider}
+                {usageSourceName(report)}
               </span>
               <span style={{ fontSize: 11, color: "var(--text-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1, minWidth: 0 }}>
-                {rowLabel}
+                {account}
               </span>
-              {(report.resets?.available ?? 0) > 0 && (
-                <span
-                  title={t("providerUsage.resetsAvailable", { count: report.resets!.available })}
-                  style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0, fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700, color: "var(--accent)" }}
-                >
-                  <RotateCcw size={10} strokeWidth={2.2} aria-hidden="true" />
-                  {report.resets!.available}
-                </span>
-              )}
-              {report.noLimits ? (
+              {(report.resets?.available ?? 0) > 0 && (() => {
+                const scopes = listBankedResetCredits(report.resets!, snapshot?.generatedAt ?? null)
+                  .map((credit) => credit.scope ? t(RESET_SCOPE_I18N_KEYS[credit.scope]) : null)
+                  .filter((label): label is string => Boolean(label));
+                const baseTitle = t("providerUsage.resetsAvailable", { count: report.resets!.available });
+                return (
+                  <span
+                    title={scopes.length > 0 ? `${baseTitle} (${scopes.join(" / ")})` : baseTitle}
+                    style={{ display: "inline-flex", alignItems: "center", gap: 2, flexShrink: 0, fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 700, color: "var(--accent)" }}
+                  >
+                    <RotateCcw size={10} strokeWidth={2.2} aria-hidden="true" />
+                    {report.resets!.available}
+                  </span>
+                );
+              })()}
+              {report.noUsageData ? (
+                <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }} title={t("appShell.providerUsageNoData")}>—</span>
+              ) : report.noLimits ? (
                 <span style={{ fontSize: 10, color: "var(--text-dim)", flexShrink: 0 }}>∞</span>
               ) : report.credits ? (
                 <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, fontWeight: 700, color: tone, fontVariantNumeric: "tabular-nums", flexShrink: 0 }}
@@ -474,7 +529,7 @@ export function ProviderUsageBar() {
                   {pct}%
                 </span>
               )}
-            </button>
+            </Row>
             {!report.noLimits && (
               <div style={{ height: 3, margin: "0 6px 0 23px", borderRadius: 2, background: "var(--border)", overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${Math.min(100, Math.max(0, pct))}%`, background: tone, borderRadius: 2 }} />
@@ -498,13 +553,6 @@ export function ProviderUsageBar() {
                     t={t}
                   />
                 )}
-                <AccountAliasEditor
-                  accountKey={report.accountKey}
-                  alias={alias}
-                  original={original}
-                  onSaved={(accountKey, saved) => setAliasOverrides((previous) => ({ ...previous, [accountKey]: saved }))}
-                  t={t}
-                />
               </div>
             )}
           </div>

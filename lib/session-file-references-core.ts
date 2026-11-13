@@ -32,9 +32,12 @@ function hasReferenceBoundaryAfter(text: string, index: number): boolean {
   return !isPathChar(ch);
 }
 
-function containsExactPathReference(text: string, filePath: string): boolean {
+function containsExactPathReference(text: string, filePath: string, home?: string): boolean {
   const target = normalizeSlashes(filePath);
   const targets = target.startsWith("/") ? [target, `file://${target}`] : [target];
+  // `~/x` in a message stands for the same file (the UI links it through the home directory).
+  const homePrefix = home ? `${normalizeSlashes(home).replace(/\/+$/, "")}/` : null;
+  if (homePrefix && homePrefix !== "/" && target.startsWith(homePrefix)) targets.push(`~/${target.slice(homePrefix.length)}`);
   const haystacks = new Set([normalizeSlashes(text), normalizeSlashes(safeDecode(text))]);
 
   for (const haystack of haystacks) {
@@ -67,11 +70,11 @@ function collectStrings(value: unknown, out: string[]): void {
   for (const item of Object.values(value)) collectStrings(item, out);
 }
 
-export function isFilePathReferencedByEntries(filePath: string, entries: SessionEntry[], cwd?: string): boolean {
+export function isFilePathReferencedByEntries(filePath: string, entries: SessionEntry[], cwd?: string, home?: string): boolean {
   for (const entry of entries) {
     const strings: string[] = [];
     collectStrings(entry, strings);
-    if (strings.some((text) => containsExactPathReference(text, filePath))) return true;
+    if (strings.some((text) => containsExactPathReference(text, filePath, home))) return true;
     if (cwd && strings.some((text) => containsRelativeFileReference(text, filePath, cwd))) return true;
   }
   return false;

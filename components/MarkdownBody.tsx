@@ -3,11 +3,15 @@
 import { Children, cloneElement, createContext, isValidElement, useContext, useMemo, type ComponentProps, type MouseEvent, type ReactElement, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import { resolveLocalFileHref } from "@/lib/file-links";
+import { useHomeDir } from "@/lib/home-dir";
+import { remarkTextLinks } from "@/lib/remark-text-links";
+import { expandHomePath, matchWholeTextLink } from "@/lib/text-links";
 import { getFileApiUrl, markdownFileUrlTransform } from "@/lib/file-urls";
 import { GithubRepoContext, remarkGithubRefs } from "../lib/github-refs";
 import { normalizeDisplayMath, useMarkdownPlugins, type MarkdownPlugins } from "../lib/markdown";
 import { markdownCodeRenderer } from "./MarkdownCode";
 import { ClickableImage } from "./ImageLightbox";
+import { openExternalUrl } from "./TextLink";
 
 export const FileSessionContext = createContext<string | undefined>(undefined);
 
@@ -27,8 +31,9 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
   const normalizedMarkdown = useMemo(() => normalizeDisplayMath(children), [children]);
   const { remarkPlugins: baseRemarkPlugins, rehypePlugins } = useMarkdownPlugins(normalizedMarkdown);
   const githubRepo = useContext(GithubRepoContext);
+  const home = useHomeDir();
   const remarkPlugins = useMemo<MarkdownPlugins["remarkPlugins"]>(
-    () => [...baseRemarkPlugins, [remarkGithubRefs, { repo: githubRepo }]],
+    () => [...baseRemarkPlugins, remarkTextLinks, [remarkGithubRefs, { repo: githubRepo }]],
     [baseRemarkPlugins, githubRepo],
   );
 
@@ -89,7 +94,19 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       });
 
     return {
-    code: markdownCodeRenderer({ isStreaming, inlineClassName: "markdown-inline-code" }),
+    code: markdownCodeRenderer({
+      isStreaming,
+      inlineClassName: "markdown-inline-code",
+      // A span that is one path or URL opens on click (double-click still selects it).
+      inlineLink: (text) => {
+        const link = matchWholeTextLink(text);
+        if (!link) return null;
+        if (link.kind === "url") return { open: () => openExternalUrl(link.value), title: link.value };
+        const expanded = expandHomePath(link.value, home);
+        const filePath = expanded && onOpenFile ? resolveLocalFileHref(expanded, cwd) : null;
+        return filePath && onOpenFile ? { open: () => onOpenFile(filePath), title: filePath } : null;
+      },
+    }),
     pre({ children }) {
       return <>{children}</>;
     },
@@ -104,8 +121,11 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       if (imageParts.length > 0 && !hasMeaningfulText(textParts)) {
         return <>{children}</>;
       }
-      const filePath = resolveLocalFileHref(href, cwd);
+      const localHref = href === "~" || href?.startsWith("~/") ? expandHomePath(href, home) : href;
+      const filePath = localHref ? resolveLocalFileHref(localHref, cwd) : null;
       const openFile = onOpenFile;
+      // A path detected in prose (remarkTextLinks) that this view cannot open stays text.
+      if ((props as Record<string, unknown>)["data-text-link"] === "path" && !(filePath && openFile)) return <>{children}</>;
       if (filePath && openFile) {
         const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
           if (event.defaultPrevented || event.button !== 0) return;
@@ -135,7 +155,7 @@ export function MarkdownBody({ children, className, isStreaming, cwd, onOpenFile
       );
     },
     };
-  }, [isStreaming, cwd, onOpenFile, suppressImages, fileSessionId]);
+  }, [isStreaming, cwd, onOpenFile, suppressImages, fileSessionId, home]);
 
   return (
     <div className={["markdown-body", className].filter(Boolean).join(" ")}>

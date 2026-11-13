@@ -5,6 +5,9 @@ import {
   servingAccounts,
   setAccountDisabled,
   setSessionAccountPin,
+  refreshRoutingAccounts,
+  setProviderDisabled,
+  setSessionProviderPin,
 } from "@/lib/account-routing";
 import type { AccountPins, AccountRoutingView } from "@/lib/account-choices";
 import { getProviderAccounts } from "@/lib/provider-usage";
@@ -12,6 +15,7 @@ import { PROVIDER_ACCOUNT_KEY_RE } from "@/lib/provider-usage-types";
 import { isValidSessionId } from "@/lib/session-file-references-core";
 import { resolveSessionPath } from "@/lib/session-reader";
 import { isRecord } from "@/lib/type-guards";
+import { invalidateModelsCache } from "@/lib/models-cache";
 
 export const dynamic = "force-dynamic";
 
@@ -34,18 +38,22 @@ async function serving(sessionId: string): Promise<AccountPins> {
 export async function GET(req: Request) {
   const sessionId = new URL(req.url).searchParams.get("sessionId");
   if (sessionId !== null && !isValidSessionId(sessionId)) return invalid("Invalid session id", "invalid_session_id");
-  const state = loadAccountRouting();
+  let state = loadAccountRouting();
+  if (state.disabled.some(key => !state.accounts.some(account => account.accountKey === key))) {
+    await refreshRoutingAccounts();
+    state = loadAccountRouting();
+  }
   const view: AccountRoutingView = {
     disabled: state.disabled,
+    disabledProviders: state.disabledProviders,
+    providerPin: sessionId ? state.providers[sessionId] ?? null : null,
     pins: sessionId ? state.sessions[sessionId] ?? {} : {},
     serving: sessionId ? await serving(sessionId) : {},
   };
   return NextResponse.json(view);
 }
 
-// PUT /api/account-routing
-//   { accountKey, disabled: boolean }                    temporarily disable an account
-//   { sessionId, provider, accountKey: string | null }   pin a session's account (null = omp decides)
+// PUT accepts global provider/account disables and per-session strict selections.
 export async function PUT(req: Request) {
   let body: unknown;
   try {
@@ -54,15 +62,34 @@ export async function PUT(req: Request) {
     return invalid("Invalid JSON request body", "invalid_json");
   }
   if (!isRecord(body)) return invalid("Invalid request body", "invalid_body");
-  const { accountKey } = body;
-  if (accountKey !== null && (typeof accountKey !== "string" || !PROVIDER_ACCOUNT_KEY_RE.test(accountKey))) {
-    return invalid("accountKey must be a provider account key", "invalid_account_key");
+  try {
+    if (typeof body.disabled === "boolean" && body.accountKey === undefined) {
+      if (!isProviderId(body.provider)) return invalid("Invalid provider id", "invalid_provider");
+      const state = setProviderDisabled(body.provider, body.disabled);
+      invalidateModelsCache();
+      return NextResponse.json({ disabledProviders: state.disabledProviders });
+    }
+    if ("providerPin" in body) {
+      if (typeof body.sessionId !== "string" || !isValidSessionId(body.sessionId)) return invalid("Invalid session id", "invalid_session_id");
+      if (body.providerPin !== null && !isProviderId(body.providerPin)) return invalid("Invalid provider id", "invalid_provider");
+      setSessionProviderPin(body.sessionId, body.providerPin);
+      return NextResponse.json({ providerPin: body.providerPin });
+    }
+    const { accountKey } = body;
+    if (accountKey !== null && (typeof accountKey !== "string" || !PROVIDER_ACCOUNT_KEY_RE.test(accountKey))) {
+      return invalid("accountKey must be a provider account key", "invalid_account_key");
+    }
+    if (accountKey !== null && body.disabled !== false) await refreshRoutingAccounts();
+    if (typeof body.disabled === "boolean") {
+      if (accountKey === null) return invalid("accountKey is required", "invalid_account_key");
+      const state = setAccountDisabled(accountKey, body.disabled);
+      invalidateModelsCache();
+      return NextResponse.json({ disabled: state.disabled });
+    }
+    if (typeof body.sessionId !== "string" || !isValidSessionId(body.sessionId)) return invalid("Invalid session id", "invalid_session_id");
+    if (!isProviderId(body.provider)) return invalid("Invalid provider id", "invalid_provider");
+    return NextResponse.json({ pins: setSessionAccountPin(body.sessionId, body.provider, accountKey) });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : String(error), code: "routing_policy_conflict" }, { status: 409 });
   }
-  if (typeof body.disabled === "boolean") {
-    if (accountKey === null) return invalid("accountKey is required", "invalid_account_key");
-    return NextResponse.json({ disabled: setAccountDisabled(accountKey, body.disabled).disabled });
-  }
-  if (typeof body.sessionId !== "string" || !isValidSessionId(body.sessionId)) return invalid("Invalid session id", "invalid_session_id");
-  if (!isProviderId(body.provider)) return invalid("Invalid provider id", "invalid_provider");
-  return NextResponse.json({ pins: setSessionAccountPin(body.sessionId, body.provider, accountKey) });
 }

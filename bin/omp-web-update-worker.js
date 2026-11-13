@@ -117,24 +117,6 @@ async function stopOriginalProcesses() {
 
 async function runManagerGate() {
   updateStatus({ stage: "installing" });
-  if (kind === "omp") {
-    // omp replaces its binary by rename, so running sessions keep the old one.
-    const bin = process.env.OMP_WEB_OMP_BIN || "omp";
-    const result = cp.spawnSync(bin, ["update"], {
-      timeout: 5 * 60 * 1000,
-      windowsHide: true,
-      encoding: "utf8",
-      maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, FORCE_COLOR: "0", NO_COLOR: "1" },
-      shell: process.platform === "win32",
-    });
-    if (result.error || result.status !== 0) {
-      const output = `${result.stderr || ""}\n${result.stdout || ""}`.trim().slice(-400);
-      const detail = output || (result.error ? String(result.error.message || result.error.code || "") : "");
-      throw new Error(`omp update failed (exit ${result.status ?? "none"})${detail ? `: ${detail}` : ""}`);
-    }
-    return;
-  }
   // App update via npm/bun
   const cmd = manager === "bun" ? (managerPath || "bun") : (managerPath || "npm");
   const args = manager === "bun" ? ["add", "-g", `@kahme247/ompweb@${target}`] : ["install", "-g", `@kahme247/ompweb@${target}`];
@@ -196,6 +178,10 @@ async function restartServices(info) {
 }
 
 async function main() {
+  if (kind !== "app") {
+    console.error("OMP is maintained from source. Build and install the maintained fork to update this runtime.");
+    process.exit(1);
+  }
   if (!/^[0-9a-f-]{36}$/i.test(attemptId || "") || !root || !packageDir || !target) {
     process.exit(1);
   }
@@ -217,7 +203,7 @@ async function main() {
 
   let svcInfo = { launchd: false, tray: false };
   try {
-    if (kind !== "omp") svcInfo = await stopOriginalProcesses();
+    svcInfo = await stopOriginalProcesses();
     await runManagerGate();
     try {
       const pkgPath = path.join(packageDir, "package.json");
@@ -228,7 +214,7 @@ async function main() {
         }
       }
     } catch {}
-    if (kind !== "omp") await restartServices(svcInfo);
+    await restartServices(svcInfo);
     await sleep(500);
     updateStatus({ state: "succeeded", stage: "finalizing", finishedAt: new Date().toISOString(), cleanupReady: true });
     // write complete marker

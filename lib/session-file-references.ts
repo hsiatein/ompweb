@@ -1,5 +1,6 @@
 import { getSessionEntries, resolveSessionPath } from "./session-reader";
 import { readdirSync, realpathSync, statSync } from "fs";
+import { homedir } from "os";
 import path from "path";
 import { readSessionHeaderSync } from "./omp/session-files";
 import { parseArtifactHref } from "./file-links";
@@ -15,13 +16,13 @@ export { isFilePathReferencedByEntries } from "./session-file-references-core";
 async function isPathReferencedBySession(
   filePath: string,
   sessionId: string | null,
-  check: (p: string, entries: SessionEntry[], cwd?: string) => boolean,
+  check: (p: string, entries: SessionEntry[], cwd?: string, home?: string) => boolean,
 ): Promise<boolean> {
   if (!isValidSessionId(sessionId)) return false;
   try {
     const sessionPath = await resolveSessionPath(sessionId);
     if (!sessionPath) return false;
-    return check(filePath, getSessionEntries(sessionPath), readSessionHeaderSync(sessionPath)?.cwd);
+    return check(filePath, getSessionEntries(sessionPath), readSessionHeaderSync(sessionPath)?.cwd, homedir());
   } catch {
     return false;
   }

@@ -5,8 +5,22 @@ export type AccountPins = Record<string, string>;
 
 export interface AccountRoutingView {
   disabled: string[];
+  disabledProviders: string[];
+  providerPin: string | null;
   pins: AccountPins;
   serving: AccountPins;
+}
+
+export const ACCOUNT_ROUTING_CHANGED_EVENT = "omp-web:account-routing-changed";
+
+/** Refresh same-tab consumers and notify other tabs after a saved global change. */
+export function notifyAccountRoutingChanged(): void {
+  window.dispatchEvent(new Event(ACCOUNT_ROUTING_CHANGED_EVENT));
+  try {
+    window.localStorage.setItem(ACCOUNT_ROUTING_CHANGED_EVENT, `${Date.now()}:${Math.random()}`);
+  } catch {
+    // Same-tab notification still works when browser storage is unavailable.
+  }
 }
 
 export interface AccountChoice {
